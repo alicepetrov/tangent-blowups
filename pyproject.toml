@@ -1,0 +1,22 @@
+[project]
+name = "tangent-blowups"
+version = "0.1.0"
+description = "Tangent Blow-Ups for Reconstructing Nonmanifold Surface"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.4.2",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest",
+    "ruff",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
