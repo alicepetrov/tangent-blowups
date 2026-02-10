@@ -10,7 +10,15 @@ Keep the public API small and stable. In src/tbu_recon/__init__.py, re-export on
     from .reconstruction.pipelines import reconstruct_implicit, reconstruct_explicit
     from .reconstruction.nonmanifold.blowups import tangent_blowups
 
-- Avoid boolean flags like oriented=True. Prefer explicit functions/types.
+Conventions:
+
+- Avoid boolean flags like oriented=True. Prefer explicit functions/types, e.g. GrassmannLift, OrientedGrassmannLift
+
+Keep clean dependency rules
+- geometry/ must not import from anywhere else.
+- pointcloud/ may import geometry/.
+- reconstruction/ may import pointcloud/, fields/, solvers/.
+- io/ and viz/ can depend on optional heavy libs; keep them at the edge.
 
 ---
 
@@ -23,7 +31,6 @@ Keep the public API small and stable. In src/tbu_recon/__init__.py, re-export on
     src/tbu_recon/
     ├── __init__.py
     ├── _version.py
-    ├── types.py                  # Protocols / type aliases / dataclasses (PointCloud, TangentField, etc.)
     ├── config.py                 # Shared config objects for pipelines
     │
     ├── geometry/                 # Core geometric primitives + algebra
@@ -36,10 +43,9 @@ Keep the public API small and stable. In src/tbu_recon/__init__.py, re-export on
     ├── pointcloud/               # Anything that takes a point cloud as input
     │   ├── __init__.py
     │   ├── neighbors.py          # kNN / radius graph backends; abstracts sklearn/faiss/pykdtree
-    │   ├── weights.py            # kernel weights, robust weights
     │   ├── denoise.py            # (Optional) filtering / outlier handling
     │   ├── tangent_estimation.py # local PCA / robust PCA / MLS; returns tangent planes
-    │   └── lifts.py              # grassmannian lifts (oriented + unoriented) = your star feature
+    │   └── lifts.py              # grassmannian lifts (oriented + unoriented) = star feature
     │
     ├── fields/                   # “Fields” living over points (tangent plane field, normals, etc.)
     │   ├── __init__.py
@@ -53,12 +59,12 @@ Keep the public API small and stable. In src/tbu_recon/__init__.py, re-export on
     │   │   ├── crust.py          # placeholders for explicit methods
     │   │   ├── atlas.py          # charts, stitching, param patches
     │   │   └── postprocess.py
-    │   ├── implicit/             # implicit field output (SDF/indicator)
+    │   ├── implicit/             # implicit field output (UDF/indicator/level set)
     │   │   ├── __init__.py
     │   │   ├── udf.py            # UDF construction
     │   │   ├── poisson.py        # poisson-style variants
     │   │   └── extract.py        # marching cubes / dual contouring adapters
-    │   ├── nonmanifold/          # logic specific to nonmanifold branching
+    │   ├── nonmanifold/          # logic specific to nonmanifold branching (maybe edges/corners?)
     │   │   ├── __init__.py
     │   │   ├── blowups.py        # tangent blow-up computation, clustering sheets, etc. 
     │   │   └── topology.py
@@ -79,6 +85,13 @@ Keep the public API small and stable. In src/tbu_recon/__init__.py, re-export on
     │   └── debug.py
     │
     └── _testsupport/             # synthetic datasets + fixtures if helpful
-        ├── __init__.py
-        └── synthetic.py
+        ├── __init__.py           # Exposes key functions
+        ├── geom_types.py         # Data containers (dataclasses)
+        ├── 2D_curves.py          # Pure math generators for curves
+        ├── 3D_surfaces.py        # Pure math generators for surfaces
+        └── modifiers.py          # Noise, jitter, and transforms
+        └── samplers.py           # Sampling strategies
 
+# Test Support
+
+#TODO
