@@ -1,5 +1,26 @@
 # DEV NOTES
 
+---
+
+**TODO; TEMP DEV NOTES**
+
+Keep the public API small and stable. In src/tbu_recon/__init__.py, re-export only the “front door”:
+
+    from .pointcloud.lifts import grassmann_lift, oriented_grassmann_lift
+    from .reconstruction.pipelines import reconstruct_implicit, reconstruct_explicit
+    from .reconstruction.nonmanifold.blowups import tangent_blowups
+
+Conventions:
+
+- Avoid boolean flags like oriented=True. Prefer explicit functions/types, e.g. GrassmannLift, OrientedGrassmannLift
+
+Keep clean dependency rules
+- geometry/ must not import from anywhere else.
+- pointcloud/ may import geometry/.
+- reconstruction/ may import pointcloud/, fields/, solvers/.
+- io/ and viz/ can depend on optional heavy libs; keep them at the edge.
+
+---
 
 ## Implementation Tracker
 

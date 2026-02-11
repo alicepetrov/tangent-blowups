@@ -2,29 +2,11 @@
 
 ---
 
-**TODO; TEMP DEV NOTES**
-
-Keep the public API small and stable. In src/tbu_recon/__init__.py, re-export only the “front door”:
-
-    from .pointcloud.lifts import grassmann_lift, oriented_grassmann_lift
-    from .reconstruction.pipelines import reconstruct_implicit, reconstruct_explicit
-    from .reconstruction.nonmanifold.blowups import tangent_blowups
-
-Conventions:
-
-- Avoid boolean flags like oriented=True. Prefer explicit functions/types, e.g. GrassmannLift, OrientedGrassmannLift
-
-Keep clean dependency rules
-- geometry/ must not import from anywhere else.
-- pointcloud/ may import geometry/.
-- reconstruction/ may import pointcloud/, fields/, solvers/.
-- io/ and viz/ can depend on optional heavy libs; keep them at the edge.
-
----
-
 ### Getting Started
 
 #TODO
+
+---
 
 ### Project Structure
 
@@ -92,6 +74,8 @@ Keep clean dependency rules
         └── modifiers.py          # Noise, jitter, and transforms
         └── samplers.py           # Sampling strategies
 
+---
+
 # Test Support
 
 The `tangent_blowups.testsupport` package provides synthetic geometry and
@@ -102,24 +86,6 @@ It is intended to be the "front door" for generating:
 - Parametric curves/surfaces with optional tangents and normals
 - Sampled point sets using reusable sampling strategies
 - Controlled perturbations (noise, jitter, orientation flips)
-
-## What Is Exposed
-
-From `tangent_blowups.testsupport`:
-
-- Geometry types:
-  - `GroundTruth`, `ParametricCurve`, `ParametricSurface`, `Sample`
-- Sampling:
-  - `sample`, `SamplingStrategy`
-  - `UniformCurve`, `RandomCurve`, `JitteredCurve`, `ChebyshevCurve`
-  - `UniformSurface`, `RandomSurface`, `JitteredSurface`, `ChebyshevGrid`
-- 2D/3D synthetic geometry:
-  - `circle`, `figure8`, `lissajous`
-  - `helix`, `figure8_space`, `space_lissajous`, `trefoil_knot`
-  - `whitney_umbrella`, `monkey_saddle`, `cone`
-- Modifiers:
-  - `add_point_noise`, `jitter_points`, `jitter_tangents`, `jitter_normals`
-  - `flip_tangent_orientations`, `flip_normal_orientations`, `flip_orientations`
 
 ## Quick Usage
 
@@ -199,3 +165,5 @@ python examples/3D_sampling.py
 ```
 
 These scripts show sampling behavior and highlight detected singular regions.
+
+---
