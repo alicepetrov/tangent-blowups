@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Tuple, Optional
 import numpy as np
 
-from geom_types import GroundTruth, Sample
+from .geom_types import GroundTruth, Sample
 
 # -----------------------------------------------------------------------------
 # Base Interface

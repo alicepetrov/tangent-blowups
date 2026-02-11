@@ -3,8 +3,9 @@ This module provides explicit 2D curve examples for testing tangent blowup handl
 """
 
 import numpy as np
-from geom_types import ParametricCurve
+from .geom_types import ParametricCurve
 
+# TODO normalize tangents/normals?
 
 def circle(radius: float = 1.0) -> ParametricCurve:
     """

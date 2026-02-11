@@ -7,8 +7,8 @@ Includes:
 """
 
 import numpy as np
-from geom_types import ParametricCurve, ParametricSurface
-from solvers.linalg import normalize_vectors
+from .geom_types import ParametricCurve, ParametricSurface
+from ..solvers.linalg import normalize_vectors
 
 # -----------------------------------------------------------------------------
 # Space Curves (3D)

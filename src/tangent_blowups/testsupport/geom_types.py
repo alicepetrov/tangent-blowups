@@ -1,6 +1,6 @@
 ﻿import abc
 from dataclasses import dataclass
-from typing import Callable, Optional, Sequence, Tuple, Union, Any
+from typing import Callable, Optional, Tuple, Union
 from scipy.spatial import cKDTree
 import numpy as np
 

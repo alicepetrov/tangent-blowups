@@ -94,4 +94,108 @@ Keep clean dependency rules
 
 # Test Support
 
-#TODO
+The `tangent_blowups.testsupport` package provides synthetic geometry and
+sampling utilities used by tests, examples, and algorithm prototyping.
+
+It is intended to be the "front door" for generating:
+
+- Parametric curves/surfaces with optional tangents and normals
+- Sampled point sets using reusable sampling strategies
+- Controlled perturbations (noise, jitter, orientation flips)
+
+## What Is Exposed
+
+From `tangent_blowups.testsupport`:
+
+- Geometry types:
+  - `GroundTruth`, `ParametricCurve`, `ParametricSurface`, `Sample`
+- Sampling:
+  - `sample`, `SamplingStrategy`
+  - `UniformCurve`, `RandomCurve`, `JitteredCurve`, `ChebyshevCurve`
+  - `UniformSurface`, `RandomSurface`, `JitteredSurface`, `ChebyshevGrid`
+- 2D/3D synthetic geometry:
+  - `circle`, `figure8`, `lissajous`
+  - `helix`, `figure8_space`, `space_lissajous`, `trefoil_knot`
+  - `whitney_umbrella`, `monkey_saddle`, `cone`
+- Modifiers:
+  - `add_point_noise`, `jitter_points`, `jitter_tangents`, `jitter_normals`
+  - `flip_tangent_orientations`, `flip_normal_orientations`, `flip_orientations`
+
+## Quick Usage
+
+### 1) Sample a curve uniformly
+
+```python
+import numpy as np
+from tangent_blowups.testsupport import circle, sample, UniformCurve
+
+gt = circle(radius=2.0)
+curve_strategy = UniformCurve(n=256, t_min=0.0, t_max=2.0 * np.pi, endpoint=True)
+
+s = sample(
+    gt,
+    curve_strategy,
+    with_tangents=True,
+    with_normals=True,
+)
+
+print(s.points.shape)    # (256, 2)
+print(s.tangents.shape)  # (256, 2)
+print(s.normals.shape)   # (256, 2)
+```
+
+### 2) Sample a surface and add controlled corruption
+
+```python
+import numpy as np
+from tangent_blowups.testsupport import (
+    RandomSurface,
+    add_point_noise,
+    flip_orientations,
+    sample,
+    whitney_umbrella,
+)
+
+gt = whitney_umbrella(scale=1.0)
+surface_strategy = RandomSurface(
+    n=3000,
+    u_bounds=(-2.0, 2.0),
+    v_bounds=(-2.0, 2.0),
+    rng=np.random.default_rng(7),
+)
+
+raw = sample(gt, surface_strategy, with_tangents=True, with_normals=True)
+noisy = add_point_noise(raw, sigma=0.01)
+augmented = flip_orientations(noisy, flip_probability=0.2, coupled=True)
+```
+
+### 3) Detect likely self-intersections during evaluation
+
+```python
+import numpy as np
+from tangent_blowups.testsupport import figure8, UniformCurve
+
+curve = figure8(scale=2.0)
+t = UniformCurve(n=1000, t_min=0.0, t_max=2.0 * np.pi)(curve)[0]
+
+s = curve.evaluate(
+    t,
+    with_tangents=True,
+    with_normals=True,
+    singularity_tol=0.05,
+)
+
+if s.singular_mask is not None:
+    print("Detected singular points:", int(s.singular_mask.sum()))
+```
+
+## Run End-to-End Example Scripts
+
+The repository includes plotting demos that iterate through available strategies:
+
+```bash
+python examples/2D_sampling.py
+python examples/3D_sampling.py
+```
+
+These scripts show sampling behavior and highlight detected singular regions.

@@ -10,8 +10,8 @@ from __future__ import annotations
 from typing import Optional
 import numpy as np
 
-from geom_types import Sample
-from solvers.linalg import normalize_vectors
+from .geom_types import Sample
+from ..solvers.linalg import normalize_vectors
 
 
 def _get_rng(rng: Optional[np.random.Generator]) -> np.random.Generator:
