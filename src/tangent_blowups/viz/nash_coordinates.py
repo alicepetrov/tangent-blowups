@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # Registers 3D projection
 from typing import Optional, Union, Tuple
 
-# Adjust import based on your project structure
 from ..geometry.grassmann import BlownUpSample
 
 def _setup_figure(spatial_dim: int, n_subplots: int = 1, cols: int = 3, figsize_base: int = 4):
