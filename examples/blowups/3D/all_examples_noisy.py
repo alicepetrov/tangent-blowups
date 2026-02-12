@@ -13,6 +13,7 @@ from tangent_blowups.testsupport import (
     cube_surface,
     figure8_space,
     helix,
+    klein_bottle,
     jitter_normals,
     jitter_tangents,
     monkey_saddle,
@@ -194,6 +195,7 @@ def main():
     surfaces = [
         ("Whitney Umbrella", whitney_umbrella(scale=1.0), (-2.0, 2.0), (-2.0, 2.0)),
         ("Monkey Saddle", monkey_saddle(scale_xy=1.0, scale_z=0.25), (-2.0, 2.0), (-2.0, 2.0)),
+        ("Klein Bottle", klein_bottle(radius=2.0, scale=1.0), (0.0, 2.0 * np.pi), (0.0, 2.0 * np.pi)),
         ("Cone", cone(scale_r=1.0, scale_z=1.0), (0.0, 2.0), (0.0, 2.0 * np.pi)),
         ("Plane Cross", plane_cross(scale=1.2), (0.0, 2.0), (0.0, 1.0)),
         ("Cube Surface", cube_surface(scale=1.0), (0.0, 6.0), (0.0, 1.0)),

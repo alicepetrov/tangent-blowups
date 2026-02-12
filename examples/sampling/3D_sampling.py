@@ -7,6 +7,7 @@ from tangent_blowups.testsupport import (
     cone,
     figure8_space,
     helix,
+    klein_bottle,
     monkey_saddle,
     space_lissajous,
     trefoil_knot,
@@ -308,6 +309,7 @@ def main():
     surfaces = [
         ("Whitney Umbrella", whitney_umbrella(scale=1.0)),
         ("Monkey Saddle", monkey_saddle(scale_xy=1.0, scale_z=0.25)),
+        ("Klein Bottle", klein_bottle(radius=2.0, scale=1.0)),
         ("Cone", cone(scale_r=1.0, scale_z=1.0)),
     ]
 
