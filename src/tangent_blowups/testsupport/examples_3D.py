@@ -14,6 +14,35 @@ from ..solvers.linalg import normalize_vectors
 # Space Curves (3D)
 # -----------------------------------------------------------------------------
 
+def _polyline_curve(vertices: np.ndarray) -> ParametricCurve:
+    verts = np.asarray(vertices, dtype=float)
+    if verts.ndim != 2 or verts.shape[1] != 3:
+        raise ValueError("vertices must be shape (M, 3)")
+    if verts.shape[0] < 2:
+        raise ValueError("vertices must contain at least 2 points")
+
+    # Ensure closed by repeating the first vertex if needed.
+    if not np.allclose(verts[0], verts[-1]):
+        verts = np.vstack([verts, verts[0]])
+
+    edges = verts[1:] - verts[:-1]
+    edge_dirs = normalize_vectors(edges)
+    n_edges = edges.shape[0]
+
+    def pos(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, float(n_edges))
+        idx = np.floor(s).astype(int)
+        local = s - idx
+        return verts[idx] + edges[idx] * local[..., None]
+
+    def tan(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, float(n_edges))
+        idx = np.floor(s).astype(int)
+        return edge_dirs[idx]
+
+    return ParametricCurve(position=pos, tangent=tan, normal=None)
+
+
 def helix(radius: float = 1.0, pitch: float = 0.25) -> ParametricCurve:
     """
     Circular helix in 3D.
@@ -174,6 +203,66 @@ def figure8_space(scale_xy: float = 1.0, scale_z: float = 0.5) -> ParametricCurv
         tangent=tan,
         normal=None,
     )
+
+
+def square_loop(side: float = 2.0, z: float = 0.0) -> ParametricCurve:
+    """
+    Square loop in the XY-plane with sharp corners.
+    """
+    half = 0.5 * side
+    verts = np.array(
+        [
+            [-half, -half, z],
+            [half, -half, z],
+            [half, half, z],
+            [-half, half, z],
+        ]
+    )
+    return _polyline_curve(verts)
+
+
+def triangle_loop(side: float = 2.0, z: float = 0.0) -> ParametricCurve:
+    """
+    Equilateral triangle in the XY-plane with sharp corners.
+    """
+    h = np.sqrt(3.0) * 0.5 * side
+    verts = np.array(
+        [
+            [0.0, 2.0 * h / 3.0, z],
+            [-0.5 * side, -h / 3.0, z],
+            [0.5 * side, -h / 3.0, z],
+        ]
+    )
+    return _polyline_curve(verts)
+
+
+def cross_curve(scale: float = 1.0) -> ParametricCurve:
+    """
+    Self-intersecting cross curve with sharp corners.
+    """
+    verts = np.array(
+        [
+            [-scale, 0.0, 0.0],
+            [scale, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, scale, 0.0],
+            [0.0, -scale, 0.0],
+            [0.0, 0.0, 0.0],
+            [-scale, 0.0, 0.0],
+        ]
+    )
+    return _polyline_curve(verts)
+
+
+def pentagram(scale: float = 1.0, z: float = 0.0) -> ParametricCurve:
+    """
+    Self-intersecting 5-point star (pentagram) in the XY-plane.
+    """
+    angles = np.linspace(0.0, 2.0 * np.pi, 5, endpoint=False)
+    ring = np.stack([np.cos(angles), np.sin(angles), np.full_like(angles, z)], axis=-1)
+    order = [0, 2, 4, 1, 3]
+    verts = ring[order]
+    return _polyline_curve(verts)
 
 
 # -----------------------------------------------------------------------------
@@ -366,12 +455,283 @@ def cone(scale_r: float = 1.0, scale_z: float = 1.0) -> ParametricSurface:
     return ParametricSurface(position=pos, tangent=tan, normal=norm)
 
 
+def plane_cross(scale: float = 1.0) -> ParametricSurface:
+    """
+    Two perpendicular planes intersecting along the x-axis (self-intersecting).
+
+    Domain:
+      u in [0, 2), v in [0, 1]
+    """
+    def pos(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.floor(u).astype(int)
+        face = np.clip(face, 0, 1)
+        s = u - face
+        a = (s - 0.5) * 2.0 * scale
+        b = (v - 0.5) * 2.0 * scale
+
+        x = a
+        y = np.zeros_like(a)
+        z = np.zeros_like(a)
+
+        m0 = face == 0
+        m1 = face != 0
+
+        y[m0] = b[m0]
+        z[m0] = 0.0
+
+        y[m1] = 0.0
+        z[m1] = b[m1]
+
+        return np.stack([x, y, z], axis=-1)
+
+    def tan(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.floor(u).astype(int)
+        face = np.clip(face, 0, 1)
+        tx = np.ones_like(v)
+        ty = np.zeros_like(v)
+        tz = np.zeros_like(v)
+        return normalize_vectors(np.stack([tx, ty, tz], axis=-1))
+
+    def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.floor(u).astype(int)
+        face = np.clip(face, 0, 1)
+        nx = np.zeros_like(v)
+        ny = np.zeros_like(v)
+        nz = np.zeros_like(v)
+
+        m0 = face == 0
+        m1 = face != 0
+
+        nz[m0] = 1.0
+        ny[m1] = 1.0
+
+        return normalize_vectors(np.stack([nx, ny, nz], axis=-1))
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
+def cube_surface(scale: float = 1.0) -> ParametricSurface:
+    """
+    Axis-aligned cube surface with sharp edges and corners.
+
+    Domain:
+      u in [0, 6), v in [0, 1]
+    """
+    half = float(scale)
+
+    def pos(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.floor(u).astype(int)
+        face = np.clip(face, 0, 5)
+        s = u - face
+
+        x = np.zeros_like(s)
+        y = np.zeros_like(s)
+        z = np.zeros_like(s)
+
+        y0 = -half + 2.0 * half * s
+        z0 = -half + 2.0 * half * v
+
+        # +X face
+        m0 = face == 0
+        x[m0] = half
+        y[m0] = y0[m0]
+        z[m0] = z0[m0]
+
+        # -X face
+        m1 = face == 1
+        x[m1] = -half
+        y[m1] = -y0[m1]
+        z[m1] = z0[m1]
+
+        # +Y face
+        m2 = face == 2
+        y[m2] = half
+        x[m2] = -y0[m2]
+        z[m2] = z0[m2]
+
+        # -Y face
+        m3 = face == 3
+        y[m3] = -half
+        x[m3] = y0[m3]
+        z[m3] = z0[m3]
+
+        # +Z face
+        m4 = face == 4
+        z[m4] = half
+        x[m4] = y0[m4]
+        y[m4] = z0[m4]
+
+        # -Z face
+        m5 = face == 5
+        z[m5] = -half
+        x[m5] = y0[m5]
+        y[m5] = -z0[m5]
+
+        return np.stack([x, y, z], axis=-1)
+
+    def tan(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.floor(u).astype(int)
+        face = np.clip(face, 0, 5)
+
+        tx = np.zeros_like(v)
+        ty = np.zeros_like(v)
+        tz = np.zeros_like(v)
+
+        m0 = face == 0  # +X, along +Y
+        tx[m0], ty[m0], tz[m0] = 0.0, 1.0, 0.0
+
+        m1 = face == 1  # -X, along -Y
+        tx[m1], ty[m1], tz[m1] = 0.0, -1.0, 0.0
+
+        m2 = face == 2  # +Y, along -X
+        tx[m2], ty[m2], tz[m2] = -1.0, 0.0, 0.0
+
+        m3 = face == 3  # -Y, along +X
+        tx[m3], ty[m3], tz[m3] = 1.0, 0.0, 0.0
+
+        m4 = face == 4  # +Z, along +X
+        tx[m4], ty[m4], tz[m4] = 1.0, 0.0, 0.0
+
+        m5 = face == 5  # -Z, along +X
+        tx[m5], ty[m5], tz[m5] = 1.0, 0.0, 0.0
+
+        return normalize_vectors(np.stack([tx, ty, tz], axis=-1))
+
+    def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.floor(u).astype(int)
+        face = np.clip(face, 0, 5)
+
+        nx = np.zeros_like(v)
+        ny = np.zeros_like(v)
+        nz = np.zeros_like(v)
+
+        nx[face == 0] = 1.0
+        nx[face == 1] = -1.0
+        ny[face == 2] = 1.0
+        ny[face == 3] = -1.0
+        nz[face == 4] = 1.0
+        nz[face == 5] = -1.0
+
+        return normalize_vectors(np.stack([nx, ny, nz], axis=-1))
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
+def tetrahedron_surface(scale: float = 1.0) -> ParametricSurface:
+    """
+    Regular tetrahedron surface with sharp edges and corners.
+
+    Domain:
+      u in [0, 4), v in [0, 1]
+    """
+    verts = np.array(
+        [
+            [1.0, 1.0, 1.0],
+            [-1.0, -1.0, 1.0],
+            [-1.0, 1.0, -1.0],
+            [1.0, -1.0, -1.0],
+        ],
+        dtype=float,
+    )
+    verts *= scale / np.linalg.norm(verts[0])
+
+    faces = np.array(
+        [
+            [0, 1, 2],
+            [0, 3, 1],
+            [0, 2, 3],
+            [1, 3, 2],
+        ],
+        dtype=int,
+    )
+
+    face_normals = []
+    face_tangents = []
+    for f in faces:
+        v0, v1, v2 = verts[f[0]], verts[f[1]], verts[f[2]]
+        e0 = v1 - v0
+        e1 = v2 - v0
+        n = normalize_vectors(np.cross(e0, e1))
+        face_normals.append(n)
+        face_tangents.append(normalize_vectors(e0))
+    face_normals = np.asarray(face_normals).reshape(-1, 3)
+    face_tangents = np.asarray(face_tangents).reshape(-1, 3)
+
+    def _barycentric(u_local: np.ndarray, v_local: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        s = u_local
+        t = v_local
+        over = (s + t) > 1.0
+        s = np.where(over, 1.0 - s, s)
+        t = np.where(over, 1.0 - t, t)
+        return s, t
+
+    def pos(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.floor(u).astype(int)
+        face = np.clip(face, 0, 3)
+        s = u - face
+        t = v
+        s, t = _barycentric(s, t)
+
+        x = np.zeros_like(s)
+        y = np.zeros_like(s)
+        z = np.zeros_like(s)
+
+        for fi in range(4):
+            m = face == fi
+            if not np.any(m):
+                continue
+            v0, v1, v2 = verts[faces[fi][0]], verts[faces[fi][1]], verts[faces[fi][2]]
+            s_m = np.atleast_1d(s[m])
+            t_m = np.atleast_1d(t[m])
+            p = v0 + s_m[:, None] * (v1 - v0) + t_m[:, None] * (v2 - v0)
+            x[m], y[m], z[m] = p[:, 0], p[:, 1], p[:, 2]
+
+        return np.stack([x, y, z], axis=-1)
+
+    def tan(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.floor(u).astype(int)
+        face = np.clip(face, 0, 3)
+        return face_tangents[face]
+
+    def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.floor(u).astype(int)
+        face = np.clip(face, 0, 3)
+        return face_normals[face]
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
 __all__ = [
     "helix",
     "trefoil_knot",
     "space_lissajous",
     "figure8_space",
+    "square_loop",
+    "triangle_loop",
+    "cross_curve",
+    "pentagram",
     "whitney_umbrella",
     "monkey_saddle",
     "cone",
+    "plane_cross",
+    "cube_surface",
+    "tetrahedron_surface",
 ]

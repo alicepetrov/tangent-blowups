@@ -65,6 +65,7 @@
     ├── viz/                      # Optional: plotting, polyscope, napari, etc.
     │   ├── __init__.py
     │   └── debug.py
+    │   └── nash_coordinates.py
     │
     └── _testsupport/             # synthetic datasets + fixtures if helpful
         ├── __init__.py           # Exposes key functions

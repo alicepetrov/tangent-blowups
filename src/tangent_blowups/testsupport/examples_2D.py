@@ -5,8 +5,6 @@ This module provides explicit 2D curve examples for testing tangent blowup handl
 import numpy as np
 from .geom_types import ParametricCurve
 
-# TODO normalize tangents/normals?
-
 def circle(radius: float = 1.0) -> ParametricCurve:
     """
     Returns the ParametricCurve for a circle centered at (0,0).
@@ -134,5 +132,166 @@ def lissajous(a: float = 3.0, b: float = 2.0, delta: float = np.pi / 2, scale: f
     return ParametricCurve(
         position=pos, 
         tangent=tan, 
+        normal=norm,
+    )
+
+
+def square(side: float = 2.0) -> ParametricCurve:
+    """
+    Axis-aligned square centered at the origin with sharp corners.
+
+    Parametrization:
+      t in [0, 4), each unit interval traces one edge.
+    """
+    half = 0.5 * side
+
+    def pos(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, 4.0)
+        x = np.zeros_like(s, dtype=float)
+        y = np.zeros_like(s, dtype=float)
+
+        m0 = s < 1.0
+        m1 = (s >= 1.0) & (s < 2.0)
+        m2 = (s >= 2.0) & (s < 3.0)
+        m3 = s >= 3.0
+
+        x[m0] = -half + side * s[m0]
+        y[m0] = -half
+
+        x[m1] = half
+        y[m1] = -half + side * (s[m1] - 1.0)
+
+        x[m2] = half - side * (s[m2] - 2.0)
+        y[m2] = half
+
+        x[m3] = -half
+        y[m3] = half - side * (s[m3] - 3.0)
+
+        return np.stack([x, y], axis=-1)
+
+    def tan(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, 4.0)
+        tx = np.zeros_like(s, dtype=float)
+        ty = np.zeros_like(s, dtype=float)
+
+        m0 = s < 1.0
+        m1 = (s >= 1.0) & (s < 2.0)
+        m2 = (s >= 2.0) & (s < 3.0)
+        m3 = s >= 3.0
+
+        tx[m0], ty[m0] = 1.0, 0.0
+        tx[m1], ty[m1] = 0.0, 1.0
+        tx[m2], ty[m2] = -1.0, 0.0
+        tx[m3], ty[m3] = 0.0, -1.0
+
+        return np.stack([tx, ty], axis=-1)
+
+    def norm(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, 4.0)
+        nx = np.zeros_like(s, dtype=float)
+        ny = np.zeros_like(s, dtype=float)
+
+        m0 = s < 1.0
+        m1 = (s >= 1.0) & (s < 2.0)
+        m2 = (s >= 2.0) & (s < 3.0)
+        m3 = s >= 3.0
+
+        nx[m0], ny[m0] = 0.0, -1.0
+        nx[m1], ny[m1] = 1.0, 0.0
+        nx[m2], ny[m2] = 0.0, 1.0
+        nx[m3], ny[m3] = -1.0, 0.0
+
+        return np.stack([nx, ny], axis=-1)
+
+    return ParametricCurve(
+        position=pos,
+        tangent=tan,
+        normal=norm,
+    )
+
+
+def triangle(side: float = 2.0) -> ParametricCurve:
+    """
+    Equilateral triangle centered at the origin with sharp corners.
+
+    Parametrization:
+      t in [0, 3), each unit interval traces one edge.
+    """
+    h = np.sqrt(3.0) * 0.5 * side
+    v0 = np.array([0.0, 2.0 * h / 3.0])
+    v1 = np.array([-0.5 * side, -h / 3.0])
+    v2 = np.array([0.5 * side, -h / 3.0])
+
+    e0 = v2 - v1
+    e1 = v0 - v2
+    e2 = v1 - v0
+
+    t0 = e0 / np.linalg.norm(e0)
+    t1 = e1 / np.linalg.norm(e1)
+    t2 = e2 / np.linalg.norm(e2)
+
+    def pos(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, 3.0)
+        x = np.zeros_like(s, dtype=float)
+        y = np.zeros_like(s, dtype=float)
+
+        m0 = s < 1.0
+        m1 = (s >= 1.0) & (s < 2.0)
+        m2 = s >= 2.0
+
+        s0 = s[m0]
+        s1 = s[m1]
+        s2 = s[m2]
+
+        p0 = v1 + e0 * s0[:, None]
+        p1 = v2 + e1 * (s1 - 1.0)[:, None]
+        p2 = v0 + e2 * (s2 - 2.0)[:, None]
+
+        if p0.size:
+            x[m0], y[m0] = p0[:, 0], p0[:, 1]
+        if p1.size:
+            x[m1], y[m1] = p1[:, 0], p1[:, 1]
+        if p2.size:
+            x[m2], y[m2] = p2[:, 0], p2[:, 1]
+
+        return np.stack([x, y], axis=-1)
+
+    def tan(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, 3.0)
+        tx = np.zeros_like(s, dtype=float)
+        ty = np.zeros_like(s, dtype=float)
+
+        m0 = s < 1.0
+        m1 = (s >= 1.0) & (s < 2.0)
+        m2 = s >= 2.0
+
+        tx[m0], ty[m0] = t0[0], t0[1]
+        tx[m1], ty[m1] = t1[0], t1[1]
+        tx[m2], ty[m2] = t2[0], t2[1]
+
+        return np.stack([tx, ty], axis=-1)
+
+    def norm(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, 3.0)
+        nx = np.zeros_like(s, dtype=float)
+        ny = np.zeros_like(s, dtype=float)
+
+        m0 = s < 1.0
+        m1 = (s >= 1.0) & (s < 2.0)
+        m2 = s >= 2.0
+
+        n0 = np.array([t0[1], -t0[0]])
+        n1 = np.array([t1[1], -t1[0]])
+        n2 = np.array([t2[1], -t2[0]])
+
+        nx[m0], ny[m0] = n0[0], n0[1]
+        nx[m1], ny[m1] = n1[0], n1[1]
+        nx[m2], ny[m2] = n2[0], n2[1]
+
+        return np.stack([nx, ny], axis=-1)
+
+    return ParametricCurve(
+        position=pos,
+        tangent=tan,
         normal=norm,
     )
