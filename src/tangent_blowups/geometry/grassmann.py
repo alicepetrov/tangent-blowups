@@ -149,14 +149,43 @@ class BlownUpPoint:
         """
         return projectors.basis_to_projector(self.U)
 
-    def distance_to(self, other: 'BlownUpPoint', alpha: float = 1.0) -> float:
+    def distance_to(
+        self,
+        other: 'BlownUpPoint',
+        alpha: float = 1.0,
+        subspace_metric: Literal['chordal', 'geodesic'] = 'chordal',
+    ) -> float:
         """
         Computes the product metric distance.
-        d^2 = ||x1 - x2||^2 + alpha * d_grassmann(U1, U2)^2
+        d^2 = ||x1 - x2||^2 + alpha * d_subspace(U1, U2)^2
+
+        Args:
+            other: Another BlownUpPoint.
+            alpha: Weight on the Grassmannian distance term.
+            subspace_metric: Which Grassmannian distance to use:
+                - "chordal" (default)
+                - "geodesic"
         """
         dist_x = np.linalg.norm(self.x - other.x)
-        dist_u = dist_chordal(self.U, other.U)
+        if subspace_metric == 'chordal':
+            dist_u = dist_chordal(self.U, other.U)
+        elif subspace_metric == 'geodesic':
+            dist_u = dist_geodesic(self.U, other.U)
+        else:
+            raise ValueError(
+                f"Unknown subspace_metric '{subspace_metric}'. "
+                "Expected 'chordal' or 'geodesic'."
+            )
         return np.sqrt(dist_x**2 + alpha * (dist_u**2))
+    
+    def vectorized_embedding(self, alpha: float = 1.0) -> np.ndarray:
+        """
+        Maps this point into the Euclidean embedding space R^D.
+        V = [x, sqrt(alpha/2) * flatten(P)]
+        """
+        P_flat = self.P.flatten()
+        scale = np.sqrt(alpha / 2.0)
+        return np.hstack([self.x, scale * P_flat])
 
     def __repr__(self):
         return f"BlownUpPoint(x={self.x}, G({self.k},{self.n}))"
@@ -227,6 +256,61 @@ class BlownUpSample:
         scale = np.sqrt(alpha / 2.0)
         
         return np.hstack([self.spatial, scale * P_flat])
+
+    def distance_matrix(
+        self,
+        other: Union['BlownUpSample', None] = None,
+        *,
+        alpha: float = 1.0,
+        subspace_metric: Literal['chordal', 'geodesic'] = 'chordal',
+    ) -> np.ndarray:
+        """
+        Computes pairwise product-metric distances between two samples.
+
+        If other is None, returns the (N, N) distance matrix for self.
+        Otherwise returns (N, M) distances between self and other.
+
+        d^2 = ||x_i - y_j||^2 + alpha * d_subspace(U_i, V_j)^2
+        """
+        if other is None:
+            other = self
+
+        if self.n != other.n or self.k != other.k:
+            raise ValueError(
+                f"Dimension mismatch: self is G({self.k},{self.n}), "
+                f"other is G({other.k},{other.n})"
+            )
+
+        # Spatial distances ||x_i - y_j||^2
+        A = self.spatial
+        B = other.spatial
+        a2 = np.sum(A * A, axis=1)[:, np.newaxis]
+        b2 = np.sum(B * B, axis=1)[np.newaxis, :]
+        dist_x_sq = a2 + b2 - 2.0 * (A @ B.T)
+        dist_x_sq = np.maximum(dist_x_sq, 0.0)
+
+        # Subspace distances
+        if subspace_metric == 'chordal':
+            P = self.projectors
+            Q = other.projectors
+            # inner_{ij} = trace(P_i P_j)
+            inner = np.einsum('nij,mij->nm', P, Q)
+            dist_u_sq = (self.k + other.k - 2.0 * inner) / 2.0
+            dist_u_sq = np.maximum(dist_u_sq, 0.0)
+        elif subspace_metric == 'geodesic':
+            dist_u_sq = np.empty((self.N, other.N), dtype=float)
+            for i in range(self.N):
+                Ui = self.basis[i]
+                for j in range(other.N):
+                    d = dist_geodesic(Ui, other.basis[j])
+                    dist_u_sq[i, j] = d * d
+        else:
+            raise ValueError(
+                f"Unknown subspace_metric '{subspace_metric}'. "
+                "Expected 'chordal' or 'geodesic'."
+            )
+
+        return np.sqrt(dist_x_sq + alpha * dist_u_sq)
 
     # -----------------------------------------------------------------------
     #  Factories for Specific Geometric Inputs
