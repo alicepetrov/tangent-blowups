@@ -395,6 +395,89 @@ def monkey_saddle(scale_xy: float = 1.0, scale_z: float = 0.25) -> ParametricSur
     return ParametricSurface(position=pos, tangent=tan, normal=norm)
 
 
+def klein_bottle(radius: float = 2.0, scale: float = 1.0) -> ParametricSurface:
+    """
+    Klein bottle immersion in R^3 (self-intersecting).
+
+    Parametrization (u, v in [0, 2*pi]):
+        A = radius + cos(u/2) * sin(v) - sin(u/2) * sin(2v)
+        x = scale * A * cos(u)
+        y = scale * A * sin(u)
+        z = scale * (sin(u/2) * sin(v) + cos(u/2) * sin(2v))
+    """
+
+    def pos(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        cu = np.cos(u)
+        su = np.sin(u)
+        cuh = np.cos(0.5 * u)
+        suh = np.sin(0.5 * u)
+        sv = np.sin(v)
+        s2v = np.sin(2.0 * v)
+
+        a = radius + cuh * sv - suh * s2v
+        x = scale * a * cu
+        y = scale * a * su
+        z = scale * (suh * sv + cuh * s2v)
+        return np.stack([x, y, z], axis=-1)
+
+    def tan(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        cu = np.cos(u)
+        su = np.sin(u)
+        cuh = np.cos(0.5 * u)
+        suh = np.sin(0.5 * u)
+        sv = np.sin(v)
+        s2v = np.sin(2.0 * v)
+
+        a = radius + cuh * sv - suh * s2v
+        dadu = -0.5 * (suh * sv + cuh * s2v)
+
+        dux = scale * (dadu * cu - a * su)
+        duy = scale * (dadu * su + a * cu)
+        duz = scale * (0.5 * (cuh * sv - suh * s2v))
+        return normalize_vectors(np.stack([dux, duy, duz], axis=-1))
+
+    def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        cu = np.cos(u)
+        su = np.sin(u)
+        cuh = np.cos(0.5 * u)
+        suh = np.sin(0.5 * u)
+        sv = np.sin(v)
+        cv = np.cos(v)
+        s2v = np.sin(2.0 * v)
+        c2v = np.cos(2.0 * v)
+
+        a = radius + cuh * sv - suh * s2v
+        dadu = -0.5 * (suh * sv + cuh * s2v)
+        dadv = cuh * cv - 2.0 * suh * c2v
+
+        du = np.stack(
+            [
+                scale * (dadu * cu - a * su),
+                scale * (dadu * su + a * cu),
+                scale * (0.5 * (cuh * sv - suh * s2v)),
+            ],
+            axis=-1,
+        )
+        dv = np.stack(
+            [
+                scale * dadv * cu,
+                scale * dadv * su,
+                scale * (suh * cv + 2.0 * cuh * c2v),
+            ],
+            axis=-1,
+        )
+        n = np.cross(du, dv)
+        return normalize_vectors(n)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
 def cone(scale_r: float = 1.0, scale_z: float = 1.0) -> ParametricSurface:
     """
     Double cone parameterization.
@@ -730,6 +813,7 @@ __all__ = [
     "pentagram",
     "whitney_umbrella",
     "monkey_saddle",
+    "klein_bottle",
     "cone",
     "plane_cross",
     "cube_surface",
