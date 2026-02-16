@@ -74,37 +74,6 @@ Icons:
 
 ---
 
-### `reconstruction/` — High-level pipelines
-
-| Module                        | Purpose                                          | Status | Notes           |
-| ----------------------------- | ------------------------------------------------ | ------ | --------------- |
-| `reconstruction/pipelines.py` | Orchestration: fit → lift → blowup → reconstruct | ☐      | User-facing API |
-
-#### `explicit/`
-
-| Module                    | Purpose                                 | Status | Notes                 |
-| ------------------------- | --------------------------------------- | ------ | --------------------- |
-| `explicit/crust.py`       | Explicit surface reconstruction methods | ☐      | Placeholder initially |
-| `explicit/atlas.py`       | Chart stitching / param patches         | ☐      | Research-heavy        |
-| `explicit/postprocess.py` | Cleanup / refinement                    | ☐      |                       |
-
-#### `implicit/`
-
-| Module                | Purpose                                   | Status | Notes |
-| --------------------- | ----------------------------------------- | ------ | ----- |
-| `implicit/udf.py`     | UDF construction                          | ☐      |       |
-| `implicit/poisson.py` | Poisson-style variants                    | ☐      |       |
-| `implicit/extract.py` | Marching cubes / dual contouring adapters | ☐      |       |
-
-#### `nonmanifold/`
-
-| Module                    | Purpose                                       | Status | Notes          |
-| ------------------------- | --------------------------------------------- | ------ | -------------- |
-| `nonmanifold/blowups.py`  | Tangent blow-up computation, sheet clustering | ☐      | ⭐ Core novelty |
-| `nonmanifold/topology.py` | Topological logic                             | ☐      |                |
-
----
-
 ### `solvers/`
 
 | Module              | Purpose                                     | Status | Notes                 |

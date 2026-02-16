@@ -18,7 +18,7 @@
     ├── geometry/                 # Core geometric primitives + algebra
     │   ├── __init__.py
     │   ├── grassmann.py          # Grassmannian points, metrics, exp/log, geodesics
-    │   ├── orientations.py       # Orientation handling, sign flips, double cover tricks
+    │   ├── orientations.py       # Orientation handling, sign flips
     │   ├── projectors.py         # P = UU^T representations, principal angles, distances
     │   └── kernels.py            # (Optional) geometric kernels on G(k,n), heat kernels, etc.
     │
@@ -34,23 +34,13 @@
     │   ├── tangent_field.py      # container + ops (smooth, compare, transport)
     │   └── smooth.py             # smoothing / regularization on graphs
     │
-    ├── reconstruction/           # High-level reconstruction pipelines
+    ├── reconstruction/           # TODO
     │   ├── __init__.py
-    │   ├── explicit/             # mesh/complex output
-    │   │   ├── __init__.py
-    │   │   ├── crust.py          # placeholders for explicit methods
-    │   │   ├── atlas.py          # charts, stitching, param patches
-    │   │   └── postprocess.py
-    │   ├── implicit/             # implicit field output (UDF/indicator/level set)
-    │   │   ├── __init__.py
-    │   │   ├── udf.py            # UDF construction
-    │   │   ├── poisson.py        # poisson-style variants
-    │   │   └── extract.py        # marching cubes / dual contouring adapters
-    │   ├── nonmanifold/          # logic specific to nonmanifold branching (maybe edges/corners?)
-    │   │   ├── __init__.py
-    │   │   ├── blowups.py        # tangent blow-up computation, clustering sheets, etc. 
-    │   │   └── topology.py
-    │   └── pipelines.py          # user-facing orchestration: fit->lift->blowup->reconstruct
+    │   ├── TODO
+    |
+    ├── heat_diffusion/           # TODO
+    │   ├── __init__.py
+    │   ├── TODO
     │
     ├── solvers/                  # Optimization / linear algebra that you may swap
     │   ├── __init__.py
@@ -64,8 +54,7 @@
     │
     ├── viz/                      # Optional: plotting, polyscope, napari, etc.
     │   ├── __init__.py
-    │   └── debug.py
-    │   └── nash_coordinates.py
+    │   └── nash_coordinates.py   # Visualize high dimensional Veronese embeddings 
     │
     └── _testsupport/             # synthetic datasets + fixtures if helpful
         ├── __init__.py           # Exposes key functions
