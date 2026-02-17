@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from tangent_blowups.io.load import load_stl, read_stl
+from tangent_blowups.io.save import save_pointcloud
 
 
 def _set_axes_equal_3d(ax, points: np.ndarray) -> None:
@@ -200,6 +201,12 @@ def main() -> None:
         action="store_true",
         help="Merge duplicate vertices (only applies to vertex sampling).",
     )
+    parser.add_argument(
+        "--save",
+        type=Path,
+        default=None,
+        help="Optional path to save the point cloud (.npz or .npy).",
+    )
     args = parser.parse_args()
 
     triangles, _ = read_stl(args.stl)
@@ -214,6 +221,13 @@ def main() -> None:
     normals = np.asarray(sample.normals, dtype=float)
 
     print(f"Loaded {points.shape[0]} points from {args.stl}")
+
+    if args.save is not None:
+        save_path = args.save
+        if save_path.suffix == "":
+            save_path = save_path.with_suffix(".npz")
+        save_pointcloud(save_path, sample=sample)
+        print(f"Saved point cloud to {save_path}")
 
     _plot_points_only(points, title="Point Cloud (Points Only)")
     _plot_singular_points(
