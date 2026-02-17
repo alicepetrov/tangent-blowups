@@ -86,9 +86,9 @@ Icons:
 
 | Module           | Purpose                           | Status | Notes         |
 | ---------------- | --------------------------------- | ------ | ------------- |
-| `io/load.py`     | Load ply/obj/npz                  | ☐      |               |
-| `io/save.py`     | Save meshes / fields              | ☐      |               |
-| `io/adapters.py` | open3d/trimesh/polyscope adapters | ☐      | Optional deps |
+| `io/load.py`     | Load ply/obj/npz                  | 🟨      |               |
+| `io/save.py`     | Save meshes / fields              | 🟨      |               |
+| `io/adapters.py` | open3d/trimesh/polyscope adapters | 🟨      | Optional deps |
 
 ---
 
@@ -96,8 +96,8 @@ Icons:
 
 | Module         | Purpose                       | Status | Notes    |
 | -------------- | ----------------------------- | ------ | -------- |
-| `viz/debug.py` | Debug visualization utilities | ☐      | Optional |
 | `viz/nash_coordinates.py` | Plotting lifted nash coordinates | ✅      | Optional |
+| `viz/dist.py` | Visualize distance functions | 🟨      | Optional |
 
 ---
 
