@@ -1,0 +1,399 @@
+"""
+Point Cloud Laplacians
+----------------------
+Builds graph Laplacians from point clouds using a Gaussian (heat kernel) weight.
+Also supports Laplacians on lifted points in the product space R^n x G(k, n).
+"""
+from __future__ import annotations
+
+from typing import Literal
+
+import numpy as np
+from scipy import sparse
+from scipy.sparse import linalg as spla
+
+from .neighbors import knn_edges, radius_edges
+from ..geometry.grassmann import BlownUpSample
+
+LaplacianReturn = (
+    sparse.csr_matrix
+    | tuple[sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix]
+)
+
+
+def _as_points(points: np.ndarray) -> np.ndarray:
+    P = np.asarray(points, dtype=float)
+    if P.ndim != 2:
+        raise ValueError(f"points must be 2D (N, d). Got {P.shape}.")
+    if not np.isfinite(P).all():
+        raise ValueError("points must be finite.")
+    return P
+
+
+def _pick_bandwidth(dist2: np.ndarray, h: float | None) -> float:
+    if h is not None:
+        h_val = float(h)
+        if h_val <= 0.0:
+            raise ValueError("h must be positive.")
+        return h_val
+
+    if dist2.size == 0:
+        return 1.0
+
+    dist = np.sqrt(dist2)
+    dist = dist[dist > 0.0]
+    if dist.size == 0:
+        return 1.0
+    return float(np.median(dist))
+
+
+def _build_weight_matrix(
+    n: int,
+    rows: np.ndarray,
+    cols: np.ndarray,
+    dist2: np.ndarray,
+    *,
+    h: float,
+    symmetrize: bool,
+) -> sparse.csr_matrix:
+    if n == 0 or rows.size == 0:
+        return sparse.csr_matrix((n, n), dtype=float)
+
+    weights = np.exp(-dist2 / (h * h))
+    W = sparse.coo_matrix((weights, (rows, cols)), shape=(n, n)).tocsr()
+    W.sum_duplicates()
+
+    if symmetrize:
+        W = W.maximum(W.T)
+
+    return W
+
+
+def _laplacian_from_weight(
+    W: sparse.csr_matrix,
+    *,
+    normalized: bool,
+    eps: float,
+) -> tuple[sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix]:
+    n = W.shape[0]
+    deg = np.asarray(W.sum(axis=1)).ravel()
+    D = sparse.diags(deg, format="csr")
+
+    if not normalized:
+        L = D - W
+        return L, W, D
+
+    inv_sqrt = np.zeros_like(deg)
+    mask = deg > eps
+    inv_sqrt[mask] = 1.0 / np.sqrt(deg[mask])
+    D_inv = sparse.diags(inv_sqrt, format="csr")
+    L = sparse.eye(n, format="csr") - D_inv @ W @ D_inv
+    return L, W, D
+
+
+def pointcloud_laplacian(
+    points: np.ndarray,
+    *,
+    k: int | None = 16,
+    radius: float | None = None,
+    h: float | None = None,
+    symmetrize: bool = True,
+    include_self: bool = False,
+    normalized: bool = False,
+    return_parts: bool = False,
+    workers: int = -1,
+    eps: float = 1e-12,
+) -> LaplacianReturn:
+    """
+    Build a Laplacian for a point cloud in Euclidean space.
+
+    Args:
+        points: (N, d) array.
+        k: number of nearest neighbors (ignored if radius is provided).
+        radius: neighborhood radius for radius graph (overrides k).
+        h: Gaussian kernel bandwidth. If None, uses median neighbor distance.
+        symmetrize: ensure symmetric weights (recommended for kNN).
+        include_self: include self edges with weight exp(0)=1.
+        normalized: if True, returns symmetric normalized Laplacian.
+        return_parts: if True, returns (L, W, D).
+        workers: cKDTree parallelism (workers=-1 uses all cores).
+        eps: numerical tolerance for normalized Laplacian.
+    """
+    P = _as_points(points)
+    n = P.shape[0]
+    if n == 0:
+        empty = sparse.csr_matrix((0, 0), dtype=float)
+        if return_parts:
+            return empty, empty, empty
+        return empty
+
+    if radius is not None:
+        rows, cols, dist2 = radius_edges(
+            P,
+            radius,
+            include_self=include_self,
+            workers=workers,
+        )
+    else:
+        if k is None:
+            raise ValueError("Either k or radius must be provided.")
+        rows, cols, dist2 = knn_edges(
+            P,
+            k,
+            include_self=include_self,
+            workers=workers,
+        )
+
+    h_use = _pick_bandwidth(dist2, h)
+    W = _build_weight_matrix(
+        n, rows, cols, dist2, h=h_use, symmetrize=symmetrize
+    )
+    L, W, D = _laplacian_from_weight(W, normalized=normalized, eps=eps)
+
+    if return_parts:
+        return L, W, D
+    return L
+
+
+def _coerce_blown_up(
+    points_or_sample: np.ndarray | BlownUpSample,
+    subspace_basis: np.ndarray | None,
+) -> BlownUpSample:
+    if isinstance(points_or_sample, BlownUpSample):
+        if subspace_basis is not None:
+            raise ValueError("subspace_basis must be None when passing BlownUpSample.")
+        return points_or_sample
+    if subspace_basis is None:
+        raise ValueError("subspace_basis is required when passing raw points.")
+    return BlownUpSample(points_or_sample, subspace_basis)
+
+
+def _edges_from_distance_matrix(
+    dist: np.ndarray,
+    *,
+    k: int | None,
+    radius: float | None,
+    include_self: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    n = dist.shape[0]
+    if n == 0:
+        return (
+            np.zeros((0,), dtype=int),
+            np.zeros((0,), dtype=int),
+            np.zeros((0,), dtype=float),
+        )
+
+    dist2 = dist * dist
+    if not include_self:
+        np.fill_diagonal(dist2, np.inf)
+
+    rows_list: list[np.ndarray] = []
+    cols_list: list[np.ndarray] = []
+    dist2_list: list[np.ndarray] = []
+
+    if radius is not None:
+        r2 = float(radius) ** 2
+        for i in range(n):
+            js = np.flatnonzero(dist2[i] <= r2)
+            if js.size == 0:
+                continue
+            rows_list.append(np.full(js.size, i, dtype=int))
+            cols_list.append(js.astype(int, copy=False))
+            dist2_list.append(dist2[i, js].astype(float, copy=False))
+    else:
+        if k is None or k <= 0:
+            return (
+                np.zeros((0,), dtype=int),
+                np.zeros((0,), dtype=int),
+                np.zeros((0,), dtype=float),
+            )
+        k_eff = min(k, n - (0 if include_self else 1))
+        if k_eff <= 0:
+            return (
+                np.zeros((0,), dtype=int),
+                np.zeros((0,), dtype=int),
+                np.zeros((0,), dtype=float),
+            )
+        for i in range(n):
+            row = dist2[i]
+            idx = np.argpartition(row, k_eff - 1)[:k_eff]
+            idx = idx[np.isfinite(row[idx])]
+            if idx.size == 0:
+                continue
+            rows_list.append(np.full(idx.size, i, dtype=int))
+            cols_list.append(idx.astype(int, copy=False))
+            dist2_list.append(row[idx].astype(float, copy=False))
+
+    if not rows_list:
+        return (
+            np.zeros((0,), dtype=int),
+            np.zeros((0,), dtype=int),
+            np.zeros((0,), dtype=float),
+        )
+
+    return (
+        np.concatenate(rows_list),
+        np.concatenate(cols_list),
+        np.concatenate(dist2_list),
+    )
+
+
+def lifted_pointcloud_laplacian(
+    points_or_sample: np.ndarray | BlownUpSample,
+    subspace_basis: np.ndarray | None = None,
+    *,
+    k: int | None = 16,
+    radius: float | None = None,
+    h: float | None = None,
+    alpha: float = 1.0,
+    subspace_metric: Literal["chordal", "geodesic"] = "chordal",
+    symmetrize: bool = True,
+    include_self: bool = False,
+    normalized: bool = False,
+    return_parts: bool = False,
+    workers: int = -1,
+    eps: float = 1e-12,
+) -> LaplacianReturn:
+    """
+    Build a Laplacian on lifted points in the product space R^n x G(k, n).
+
+    The product metric is:
+        d^2 = ||x_i - x_j||^2 + alpha * d_subspace(U_i, U_j)^2
+
+    Args:
+        points_or_sample: (N, n) points or a BlownUpSample.
+        subspace_basis: (N, n, k) basis data if points_or_sample is raw points.
+        k: number of nearest neighbors (ignored if radius is provided).
+        radius: neighborhood radius for radius graph (overrides k).
+        h: Gaussian kernel bandwidth. If None, uses median neighbor distance.
+        alpha: weight on the subspace term.
+        subspace_metric: "chordal" (fast embedding) or "geodesic" (full matrix).
+        symmetrize: ensure symmetric weights (recommended for kNN).
+        include_self: include self edges with weight exp(0)=1.
+        normalized: if True, returns symmetric normalized Laplacian.
+        return_parts: if True, returns (L, W, D).
+        workers: cKDTree parallelism (workers=-1 uses all cores).
+        eps: numerical tolerance for normalized Laplacian.
+    """
+    if alpha < 0.0:
+        raise ValueError("alpha must be non-negative.")
+
+    sample = _coerce_blown_up(points_or_sample, subspace_basis)
+    n = sample.N
+    if n == 0:
+        empty = sparse.csr_matrix((0, 0), dtype=float)
+        if return_parts:
+            return empty, empty, empty
+        return empty
+
+    if subspace_metric == "chordal":
+        embed = sample.embedding_vector(alpha=alpha)
+        if radius is not None:
+            rows, cols, dist2 = radius_edges(
+                embed,
+                radius,
+                include_self=include_self,
+                workers=workers,
+            )
+        else:
+            if k is None:
+                raise ValueError("Either k or radius must be provided.")
+            rows, cols, dist2 = knn_edges(
+                embed,
+                k,
+                include_self=include_self,
+                workers=workers,
+            )
+    else:
+        dist = sample.distance_matrix(
+            alpha=alpha,
+            subspace_metric=subspace_metric,
+        )
+        rows, cols, dist2 = _edges_from_distance_matrix(
+            dist,
+            k=k,
+            radius=radius,
+            include_self=include_self,
+        )
+
+    h_use = _pick_bandwidth(dist2, h)
+    W = _build_weight_matrix(
+        n, rows, cols, dist2, h=h_use, symmetrize=symmetrize
+    )
+    L, W, D = _laplacian_from_weight(W, normalized=normalized, eps=eps)
+
+    if return_parts:
+        return L, W, D
+    return L
+
+
+def laplacian_spectrum(
+    L: sparse.spmatrix | np.ndarray,
+    *,
+    k: int = 6,
+    which: Literal["SM", "LM"] = "SM",
+    drop_first: bool = False,
+    return_eigenvalues: bool = True,
+) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
+    """
+    Compute eigenpairs of a Laplacian matrix.
+
+    Args:
+        L: Laplacian matrix (sparse or dense).
+        k: number of eigenpairs to compute.
+        which: "SM" (smallest magnitude) or "LM" (largest magnitude) for sparse.
+        drop_first: drop the smallest eigenpair (often the constant eigenvector).
+        return_eigenvalues: if False, return only eigenvectors.
+
+    Returns:
+        (evals, evecs) or evecs only. Eigenvectors are columns.
+    """
+    if k <= 0:
+        raise ValueError("k must be positive.")
+
+    n = int(L.shape[0])
+    if n == 0:
+        empty_vals = np.zeros((0,), dtype=float)
+        empty_vecs = np.zeros((0, 0), dtype=float)
+        return (empty_vals, empty_vecs) if return_eigenvalues else empty_vecs
+
+    if L.shape[0] != L.shape[1]:
+        raise ValueError("L must be square.")
+
+    use_sparse = sparse.issparse(L)
+    if use_sparse:
+        Ls = L.tocsr()
+        k_eff = min(k + (1 if drop_first else 0), n - 1)
+        if k_eff <= 0:
+            empty_vals = np.zeros((0,), dtype=float)
+            empty_vecs = np.zeros((n, 0), dtype=float)
+            return (empty_vals, empty_vecs) if return_eigenvalues else empty_vecs
+        evals, evecs = spla.eigsh(Ls, k=k_eff, which=which)
+    else:
+        Ld = np.asarray(L, dtype=float)
+        evals, evecs = np.linalg.eigh(Ld)
+        if which == "LM":
+            evals = evals[::-1]
+            evecs = evecs[:, ::-1]
+        k_eff = min(k + (1 if drop_first else 0), n)
+        evals = evals[:k_eff]
+        evecs = evecs[:, :k_eff]
+
+    order = np.argsort(evals)
+    evals = evals[order]
+    evecs = evecs[:, order]
+
+    if drop_first and evals.size > 0:
+        evals = evals[1:]
+        evecs = evecs[:, 1:]
+
+    if return_eigenvalues:
+        return evals, evecs
+    return evecs
+
+
+__all__ = [
+    "pointcloud_laplacian",
+    "lifted_pointcloud_laplacian",
+    "laplacian_spectrum",
+]
