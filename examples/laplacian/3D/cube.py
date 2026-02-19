@@ -15,7 +15,7 @@ from tangent_blowups.pointcloud.laplacian import (
     lifted_pointcloud_laplacian,
 )
 from tangent_blowups.solvers.linalg import normalize_vectors
-from tangent_blowups.testsupport import UniformSurface, cube_surface, sample
+from tangent_blowups.testsupport import RandomSurface, cube_surface, sample
 from tangent_blowups.viz.laplacian import (
     visualize_laplacian_eigenpairs,
     visualize_laplacian_eigenpair_comparison,
@@ -31,8 +31,8 @@ def _flatten(arr: np.ndarray) -> np.ndarray:
 
 def build_cube_points_and_normals(
     *,
-    nu: int = 80,
-    nv: int = 80,
+    nu: int = 100,
+    nv: int = 100,
     u_bounds: tuple[float, float] = (0.0, 6.0),
     v_bounds: tuple[float, float] = (0.0, 1.0),
     scale: float = 1.0,
@@ -44,7 +44,13 @@ def build_cube_points_and_normals(
     Sample a cube surface and return (points, normals).
     """
     surface = cube_surface(scale=scale)
-    strategy = UniformSurface(nu=nu, nv=nv, u_bounds=u_bounds, v_bounds=v_bounds)
+    rng = np.random.default_rng(seed)
+    strategy = RandomSurface(
+        n=nu * nv,
+        u_bounds=u_bounds,
+        v_bounds=v_bounds,
+        rng=rng,
+    )
     s = sample(surface, strategy, with_tangents=False, with_normals=True)
 
     points = _flatten(s.points)
@@ -103,8 +109,8 @@ def _print_eigenvalues(label: str, evals: np.ndarray):
 
 
 def main():
-    nu = 80
-    nv = 80
+    nu = 100
+    nv = 100
     scale = 1.0
     jitter = 0.0
     k = 20
@@ -114,7 +120,7 @@ def main():
     eig_k = 6
     drop_first = True
     downsample = 4
-    cmap = "coolwarm"
+    cmap = "RdBu_r"
 
     points, normals = build_cube_points_and_normals(
         nu=nu,

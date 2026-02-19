@@ -170,7 +170,7 @@ def _plot_mesh(
 
 def _default_stl_path() -> Path:
     repo_root = Path(__file__).resolve().parents[2]
-    return repo_root / "data" / "thingi10k" / "98797.stl"
+    return repo_root / "data" / "thingi10k" / "snowflake.stl"
 
 
 def main() -> None:
@@ -186,7 +186,7 @@ def main() -> None:
     parser.add_argument(
         "--samples-per-face",
         type=int,
-        default=1,
+        default=30,
         help="Number of samples per triangle face.",
     )
     parser.add_argument(

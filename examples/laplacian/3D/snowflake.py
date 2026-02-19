@@ -1,74 +1,85 @@
 """
-Figure-8 Laplacian Example
---------------------------
-Sample a 2D figure-8 curve, build point cloud and lifted Laplacians,
+Snowflake Laplacian Example
+---------------------------
+Load a snowflake point cloud, build point cloud and lifted Laplacians,
 and visualize/compare their eigenpairs.
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
 
 from tangent_blowups.geometry.grassmann import BlownUpSample
+from tangent_blowups.io.load import load_pointcloud
 from tangent_blowups.pointcloud.laplacian import (
     pointcloud_laplacian,
     lifted_pointcloud_laplacian,
 )
 from tangent_blowups.solvers.linalg import normalize_vectors
-from tangent_blowups.testsupport import UniformCurve, figure8, sample
 from tangent_blowups.viz.laplacian import (
     visualize_laplacian_eigenpairs,
     visualize_laplacian_eigenpair_comparison,
 )
 
 
-def build_fig8_points_and_tangents(
+def _flatten(arr: np.ndarray) -> np.ndarray:
+    arr = np.asarray(arr, dtype=float)
+    if arr.ndim > 2:
+        return arr.reshape(-1, arr.shape[-1])
+    return arr
+
+
+def _default_snowflake_path() -> Path:
+    repo_root = Path(__file__).resolve().parents[3]
+    return repo_root / "data" / "thingi10k_pointcloud" / "snowflake.npz"
+
+
+def load_snowflake_points_and_normals(
+    path: str | Path | None = None,
     *,
-    n: int = 1200,
-    scale: float = 2.0,
-    jitter: float = 0.02,
-    seed: int = 7,
-    tangent_eps: float = 1e-8,
+    normal_eps: float = 1e-8,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Sample a 2D figure-8 curve and return (points, tangents).
+    Load the snowflake point cloud and return (points, normals).
     """
-    curve = figure8(scale=scale)
-    strategy = UniformCurve(n=n, t_min=0.0, t_max=2.0 * np.pi, endpoint=False)
-    s = sample(curve, strategy, with_tangents=True, with_normals=False)
+    if path is None:
+        path = _default_snowflake_path()
 
-    points = np.asarray(s.points, dtype=float)
-    tangents = np.asarray(s.tangents, dtype=float)
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Snowflake data not found: {path}")
 
-    if jitter > 0.0:
-        rng = np.random.default_rng(seed)
-        points = points + rng.normal(scale=jitter, size=points.shape)
+    sample = load_pointcloud(path)
+    if sample.normals is None:
+        raise ValueError("Snowflake point cloud is missing normals.")
 
-    valid = np.isfinite(points).all(axis=1) & np.isfinite(tangents).all(axis=1)
-    norms = np.linalg.norm(tangents, axis=1)
-    valid &= norms > tangent_eps
+    points = _flatten(sample.points)
+    normals = _flatten(sample.normals)
+
+    valid = np.isfinite(points).all(axis=1) & np.isfinite(normals).all(axis=1)
+    norms = np.linalg.norm(normals, axis=1)
+    valid &= norms > normal_eps
 
     if not np.all(valid):
         dropped = int(np.sum(~valid))
-        print(f"Dropping {dropped} samples with invalid/degenerate tangents.")
+        print(f"Dropping {dropped} samples with invalid/degenerate normals.")
 
     points = points[valid]
-    tangents = normalize_vectors(tangents[valid])
-    return points, tangents
+    normals = normalize_vectors(normals[valid])
+    return points, normals
 
 
 def compute_laplacians(
     points: np.ndarray,
-    tangents: np.ndarray,
+    normals: np.ndarray,
     *,
-    k: int = 16,
+    k: int = 20,
     h: float | None = None,
     normalized: bool = True,
     alpha: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, BlownUpSample]:
-    """
-    Build point cloud and lifted Laplacians for the same sample.
-    """
     L_pc = pointcloud_laplacian(
         points,
         k=k,
@@ -77,7 +88,7 @@ def compute_laplacians(
         symmetrize=True,
     )
 
-    lifted = BlownUpSample.from_tangents(points, tangents)
+    lifted = BlownUpSample.from_normals(points, normals)
     L_lifted = lifted_pointcloud_laplacian(
         lifted,
         k=k,
@@ -96,28 +107,26 @@ def _print_eigenvalues(label: str, evals: np.ndarray):
 
 
 def main():
-    n = 1200
-    scale = 2.0
-    jitter = 0.02
-    k = 16
-    alpha = 1.0
+    data_path = _default_snowflake_path()
+    k = 20
+    alpha = 1.0 # TODO We need to crank this up to see a difference
     normalized = True
 
     eig_k = 6
     drop_first = True
-    downsample = 2
-    cmap = "RdBu_r"
+    downsample = 1
+    cmap = "coolwarm"
 
-    points, tangents = build_fig8_points_and_tangents(
-        n=n,
-        scale=scale,
-        jitter=jitter,
-        seed=7,
+    points, normals = load_snowflake_points_and_normals(
+        data_path,
+        normal_eps=1e-8,
     )
+
+    print(f"Loaded {points.shape[0]} points from {data_path}")
 
     L_pc, L_lifted, _ = compute_laplacians(
         points,
-        tangents,
+        normals,
         k=k,
         h=None,
         normalized=normalized,
@@ -135,7 +144,7 @@ def main():
         center_zero=True,
         show=False,
     )
-    fig_pc.suptitle("Point Cloud Laplacian Eigenpairs")
+    fig_pc.suptitle("Snowflake Point Cloud Laplacian Eigenpairs")
     _print_eigenvalues("Point Cloud", evals_pc)
     plt.show()
 
@@ -150,7 +159,7 @@ def main():
         center_zero=True,
         show=False,
     )
-    fig_lift.suptitle("Lifted Point Cloud Laplacian Eigenpairs")
+    fig_lift.suptitle("Snowflake Lifted Laplacian Eigenpairs")
     _print_eigenvalues("Lifted", evals_lift)
     plt.show()
 
@@ -169,7 +178,7 @@ def main():
             show=False,
         )
     )
-    fig_cmp.suptitle("Laplacian Eigenpair Comparison")
+    fig_cmp.suptitle("Snowflake Laplacian Eigenpair Comparison")
     plt.show()
 
     if evals_pc.size == evals_lift.size and evals_pc.size > 0:

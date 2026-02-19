@@ -67,7 +67,7 @@ def visualize_embedding_components(
             pts[:, 1],
             c=embed[:, idx],
             s=6,
-            cmap="viridis",
+            cmap="magma",
             alpha=0.9,
         )
         ax.set_title(labels[idx])

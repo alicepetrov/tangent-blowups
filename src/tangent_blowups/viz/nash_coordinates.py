@@ -40,7 +40,7 @@ def _plot_cloud(ax, points: np.ndarray, color_vals: np.ndarray, title: str, s: f
     # Create scatter
     if spatial_dim == 3:
         sc = ax.scatter(points[:, 0], points[:, 1], points[:, 2], 
-                       c=color_vals, s=s, cmap='viridis', alpha=alpha)
+                       c=color_vals, s=s, cmap="magma", alpha=alpha)
         
         # 3D Equal Aspect Ratio Hack
         limits = np.array([ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()])
@@ -51,7 +51,7 @@ def _plot_cloud(ax, points: np.ndarray, color_vals: np.ndarray, title: str, s: f
         ax.set_zlim3d([center[2] - radius, center[2] + radius])
     else:
         sc = ax.scatter(points[:, 0], points[:, 1], 
-                       c=color_vals, s=s, cmap='viridis', alpha=alpha)
+                       c=color_vals, s=s, cmap="magma", alpha=alpha)
     
     ax.set_title(title)
     return sc

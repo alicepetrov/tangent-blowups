@@ -30,16 +30,48 @@ def _as_points(points: np.ndarray) -> np.ndarray:
     return P
 
 
-def _pick_bandwidth(dist2: np.ndarray, h: float | None) -> float:
-    if h is not None:
+def _pick_bandwidth(
+    n: int,
+    rows: np.ndarray,
+    dist2: np.ndarray,
+    h: float | Literal["local"] | None,
+) -> float | np.ndarray:
+    """
+    Determine the bandwidth for the Gaussian kernel.
+    
+    Returns:
+        float: A single global bandwidth.
+        np.ndarray: An array of shape (n,) containing local bandwidths per point.
+    """
+    # 1. User specified a fixed global bandwidth
+    if isinstance(h, (int, float)):
         h_val = float(h)
         if h_val <= 0.0:
             raise ValueError("h must be positive.")
         return h_val
 
+    # Edge case: empty graph
     if dist2.size == 0:
         return 1.0
 
+    # 2. Local self-tuning bandwidth (Zelnik-Manor & Perona)
+    if h == "local":
+        h_sq = np.zeros(n, dtype=float)
+        # For a k-NN graph, the max distance in a row is the distance to the k-th neighbor.
+        np.maximum.at(h_sq, rows, dist2)
+        
+        h_local = np.sqrt(h_sq)
+        
+        # Safety fallback: If duplicate points exist, distance to k-th neighbor might be 0.
+        # We replace 0s with the global median to prevent division by zero.
+        zero_mask = h_local == 0
+        if zero_mask.any():
+            global_median = float(np.median(np.sqrt(dist2[dist2 > 0]))) if (dist2 > 0).any() else 1.0
+            h_local[zero_mask] = global_median
+            
+        return h_local
+
+    # 3. Global median bandwidth (h = None)
     dist = np.sqrt(dist2)
     dist = dist[dist > 0.0]
     if dist.size == 0:
@@ -53,13 +85,22 @@ def _build_weight_matrix(
     cols: np.ndarray,
     dist2: np.ndarray,
     *,
-    h: float,
+    h: float | np.ndarray,
     symmetrize: bool,
 ) -> sparse.csr_matrix:
     if n == 0 or rows.size == 0:
         return sparse.csr_matrix((n, n), dtype=float)
 
-    weights = np.exp(-dist2 / (h * h))
+    # Apply the bandwidth(s)
+    if isinstance(h, np.ndarray):
+        # Local scaling: W_ij = exp(- d_ij^2 / (h_i * h_j))
+        h_i = h[rows]
+        h_j = h[cols]
+        weights = np.exp(-dist2 / (h_i * h_j))
+    else:
+        # Global scaling: W_ij = exp(- d_ij^2 / h^2)
+        weights = np.exp(-dist2 / (h * h))
+
     W = sparse.coo_matrix((weights, (rows, cols)), shape=(n, n)).tocsr()
     W.sum_duplicates()
 
@@ -90,13 +131,12 @@ def _laplacian_from_weight(
     L = sparse.eye(n, format="csr") - D_inv @ W @ D_inv
     return L, W, D
 
-
 def pointcloud_laplacian(
     points: np.ndarray,
     *,
     k: int | None = 16,
     radius: float | None = None,
-    h: float | None = None,
+    h: float | Literal["local"] | None = "local",
     symmetrize: bool = True,
     include_self: bool = False,
     normalized: bool = False,
@@ -111,7 +151,8 @@ def pointcloud_laplacian(
         points: (N, d) array.
         k: number of nearest neighbors (ignored if radius is provided).
         radius: neighborhood radius for radius graph (overrides k).
-        h: Gaussian kernel bandwidth. If None, uses median neighbor distance.
+        h: Gaussian kernel bandwidth. "local" uses distance to k-th neighbor.
+           If None, uses global median neighbor distance.
         symmetrize: ensure symmetric weights (recommended for kNN).
         include_self: include self edges with weight exp(0)=1.
         normalized: if True, returns symmetric normalized Laplacian.
@@ -144,7 +185,10 @@ def pointcloud_laplacian(
             workers=workers,
         )
 
-    h_use = _pick_bandwidth(dist2, h)
+    # Use the updated bandwidth picker
+    h_use = _pick_bandwidth(n, rows, dist2, h)
+    
+    # Pass h_use directly to the updated weight builder
     W = _build_weight_matrix(
         n, rows, cols, dist2, h=h_use, symmetrize=symmetrize
     )
@@ -153,7 +197,6 @@ def pointcloud_laplacian(
     if return_parts:
         return L, W, D
     return L
-
 
 def _coerce_blown_up(
     points_or_sample: np.ndarray | BlownUpSample,
@@ -244,7 +287,7 @@ def lifted_pointcloud_laplacian(
     *,
     k: int | None = 16,
     radius: float | None = None,
-    h: float | None = None,
+    h: float | Literal["local"] | None = "local",
     alpha: float = 1.0,
     subspace_metric: Literal["chordal", "geodesic"] = "chordal",
     symmetrize: bool = True,
@@ -265,7 +308,8 @@ def lifted_pointcloud_laplacian(
         subspace_basis: (N, n, k) basis data if points_or_sample is raw points.
         k: number of nearest neighbors (ignored if radius is provided).
         radius: neighborhood radius for radius graph (overrides k).
-        h: Gaussian kernel bandwidth. If None, uses median neighbor distance.
+        h: Gaussian kernel bandwidth. "local" uses distance to k-th neighbor.
+           If None, uses global median neighbor distance.
         alpha: weight on the subspace term.
         subspace_metric: "chordal" (fast embedding) or "geodesic" (full matrix).
         symmetrize: ensure symmetric weights (recommended for kNN).
@@ -316,7 +360,10 @@ def lifted_pointcloud_laplacian(
             include_self=include_self,
         )
 
-    h_use = _pick_bandwidth(dist2, h)
+    # Use the updated bandwidth picker
+    h_use = _pick_bandwidth(n, rows, dist2, h)
+    
+    # Pass h_use directly to the updated weight builder
     W = _build_weight_matrix(
         n, rows, cols, dist2, h=h_use, symmetrize=symmetrize
     )
@@ -332,21 +379,27 @@ def laplacian_spectrum(
     *,
     k: int = 6,
     which: Literal["SM", "LM"] = "SM",
+    sigma: float = -1e-5,
     drop_first: bool = False,
     return_eigenvalues: bool = True,
 ) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
     """
     Compute eigenpairs of a Laplacian matrix.
 
+    For large sparse matrices, finding the smallest magnitude ('SM') eigenvalues 
+    directly is highly unstable. This function automatically uses shift-invert 
+    mode (via `sigma`) to robustly and efficiently find the bottom of the spectrum.
+
     Args:
         L: Laplacian matrix (sparse or dense).
         k: number of eigenpairs to compute.
-        which: "SM" (smallest magnitude) or "LM" (largest magnitude) for sparse.
-        drop_first: drop the smallest eigenpair (often the constant eigenvector).
+        which: "SM" (smallest magnitude) or "LM" (largest magnitude).
+        sigma: shift applied for shift-invert mode when computing "SM" (default: -1e-5).
+        drop_first: drop the first eigenpair (often the trivial constant eigenvector).
         return_eigenvalues: if False, return only eigenvectors.
 
     Returns:
-        (evals, evecs) or evecs only. Eigenvectors are columns.
+        (evals, evecs) or evecs only. Eigenvectors are in columns.
     """
     if k <= 0:
         raise ValueError("k must be positive.")
@@ -360,37 +413,48 @@ def laplacian_spectrum(
     if L.shape[0] != L.shape[1]:
         raise ValueError("L must be square.")
 
+    k_eff = min(k + (1 if drop_first else 0), n)
     use_sparse = sparse.issparse(L)
+
     if use_sparse:
         Ls = L.tocsr()
-        k_eff = min(k + (1 if drop_first else 0), n - 1)
-        if k_eff <= 0:
-            empty_vals = np.zeros((0,), dtype=float)
-            empty_vecs = np.zeros((n, 0), dtype=float)
-            return (empty_vals, empty_vecs) if return_eigenvalues else empty_vecs
-        evals, evecs = spla.eigsh(Ls, k=k_eff, which=which)
+        # ARPACK cannot compute k >= N - 1 eigenvalues. 
+        # Fallback to dense solver if requesting the full spectrum of a small graph.
+        if k_eff >= n - 1:
+            Ld = Ls.toarray()
+            evals, evecs = np.linalg.eigh(Ld)
+        else:
+            if which == "SM":
+                # SHIFT-INVERT MODE: Finds eigenvalues closest to `sigma`.
+                # We ask for "LM" of the shifted operator, which yields the "SM" of the original.
+                evals, evecs = spla.eigsh(Ls, k=k_eff, sigma=sigma, which="LM")
+            else:
+                # Standard mode for largest magnitude eigenvalues
+                evals, evecs = spla.eigsh(Ls, k=k_eff, which="LM")
     else:
         Ld = np.asarray(L, dtype=float)
         evals, evecs = np.linalg.eigh(Ld)
-        if which == "LM":
-            evals = evals[::-1]
-            evecs = evecs[:, ::-1]
-        k_eff = min(k + (1 if drop_first else 0), n)
-        evals = evals[:k_eff]
-        evecs = evecs[:, :k_eff]
 
+    # Sort the results consistently
     order = np.argsort(evals)
+    if which == "LM":
+        order = order[::-1]  # Sort descending if we wanted largest first
+        
     evals = evals[order]
     evecs = evecs[:, order]
 
+    # Handle dropping the trivial component (the 0 eigenvalue)
     if drop_first and evals.size > 0:
         evals = evals[1:]
         evecs = evecs[:, 1:]
 
+    # Truncate to exactly k if we fetched extra
+    evals = evals[:k]
+    evecs = evecs[:, :k]
+
     if return_eigenvalues:
         return evals, evecs
     return evecs
-
 
 __all__ = [
     "pointcloud_laplacian",
