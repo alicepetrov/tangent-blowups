@@ -24,7 +24,7 @@ def spectral_embedding_from_laplacian(
     L: sparse.spmatrix | np.ndarray,
     *,
     n_components: int,
-    drop_first: bool = False,  # FIX 1: Must be False for K-Means to work correctly
+    drop_first: bool = False,
     which: Literal["SM", "LM"] = "SM",
     normalize_rows: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -37,7 +37,6 @@ def spectral_embedding_from_laplacian(
     if n_components <= 0:
         raise ValueError("n_components must be positive.")
 
-    # FIX 2: laplacian_spectrum handles the drop offset internally.
     evals, evecs = laplacian_spectrum(
         L,
         k=n_components,
@@ -97,7 +96,7 @@ def spectral_clustering_pointcloud(
     *,
     k: int | None = 16,
     radius: float | None = None,
-    h: float | Literal["local"] | None = "local",  # FIX 3: Expose local bandwidth
+    h: float | Literal["local"] | None = "local",
     laplacian_normalized: bool = True,
     symmetrize: bool = True,
     include_self: bool = False,
@@ -153,7 +152,7 @@ def spectral_clustering_lifted(
     *,
     k: int | None = 16,
     radius: float | None = None,
-    h: float | Literal["local"] | None = "local",  # FIX 3: Expose local bandwidth
+    h: float | Literal["local"] | None = "local",
     alpha: float = 1.0,
     subspace_metric: Literal["chordal", "geodesic"] = "chordal",
     laplacian_normalized: bool = True,
