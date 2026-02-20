@@ -192,8 +192,8 @@ def main() -> None:
     parser.add_argument(
         "--sample-mode",
         type=str,
-        default="faces",
-        choices=["faces", "vertices"],
+        default="dense",
+        choices=["faces", "vertices", "dense"], # TODO add a dense_perp_angle_tol_deg option
         help="Sampling strategy for converting mesh to points.",
     )
     parser.add_argument(
