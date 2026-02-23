@@ -10,6 +10,7 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from tangent_blowups.io.load import load_stl, read_stl
 from tangent_blowups.io.save import save_pointcloud
+from tangent_blowups.testsupport.geom_types import Sample
 
 
 def _set_axes_equal_3d(ax, points: np.ndarray) -> None:
@@ -173,6 +174,113 @@ def _default_stl_path() -> Path:
     return repo_root / "data" / "thingi10k" / "snowflake.stl"
 
 
+def _default_thingi10k_root() -> Path:
+    repo_root = Path(__file__).resolve().parents[2]
+    return repo_root / "data" / "thingi10k"
+
+
+def _default_thingi10k_output() -> Path:
+    repo_root = Path(__file__).resolve().parents[2]
+    return repo_root / "data" / "thingi10k_pointcloud"
+
+
+def _subset_params(params: np.ndarray | tuple[np.ndarray, ...], idx: np.ndarray):
+    if isinstance(params, tuple):
+        return tuple(p[idx] for p in params)
+    return params[idx]
+
+
+def _downsample_sample(
+    sample: Sample,
+    *,
+    max_points: int | None,
+    rng: np.random.Generator,
+) -> tuple[Sample, tuple[int, int] | None]:
+    if max_points is None:
+        return sample, None
+    if max_points <= 0:
+        raise ValueError("max_points must be positive.")
+
+    n_points = sample.points.shape[0]
+    if n_points <= max_points:
+        return sample, (n_points, n_points)
+
+    idx = rng.choice(n_points, size=max_points, replace=False)
+    idx.sort()
+
+    points = sample.points[idx]
+    params = _subset_params(sample.params, idx)
+    tangents = sample.tangents[idx] if sample.tangents is not None else None
+    normals = sample.normals[idx] if sample.normals is not None else None
+
+    if sample.singular_mask is not None:
+        singular_mask = sample.singular_mask[idx]
+        singular_indices = np.flatnonzero(singular_mask)
+    else:
+        singular_mask = None
+        singular_indices = None
+
+    return (
+        Sample(
+            points=points,
+            params=params,
+            tangents=tangents,
+            normals=normals,
+            singular_mask=singular_mask,
+            singular_indices=singular_indices,
+        ),
+        (n_points, max_points),
+    )
+
+
+def _batch_convert_thingi10k(
+    *,
+    input_root: Path,
+    output_root: Path,
+    sample_mode: str,
+    samples_per_face: int,
+    merge_vertices: bool,
+    max_points: int | None,
+    downsample_seed: int | None,
+) -> None:
+    stl_files = sorted(input_root.glob("*.stl"))
+    if not stl_files:
+        raise FileNotFoundError(f"No STL files found in {input_root}")
+
+    output_root.mkdir(parents=True, exist_ok=True)
+    total = len(stl_files)
+    print(f"Found {total} STL files in {input_root}")
+    rng = np.random.default_rng(downsample_seed)
+
+    for idx, stl_path in enumerate(stl_files, start=1):
+        try:
+            sample = load_stl(
+                stl_path,
+                sample_mode=sample_mode,
+                samples_per_face=samples_per_face,
+                merge_vertices=merge_vertices,
+            )
+            sample, downsampled = _downsample_sample(
+                sample,
+                max_points=max_points,
+                rng=rng,
+            )
+            save_path = output_root / f"{stl_path.stem}.npz"
+            save_pointcloud(save_path, sample=sample)
+        except Exception as exc:
+            print(f"[{idx}/{total}] Failed {stl_path.name}: {exc}")
+            continue
+
+        if idx == 1 or idx == total or idx % 100 == 0:
+            if downsampled is not None and downsampled[0] != downsampled[1]:
+                print(
+                    f"[{idx}/{total}] Saved {save_path.name} "
+                    f"(downsampled {downsampled[0]} -> {downsampled[1]})"
+                )
+            else:
+                print(f"[{idx}/{total}] Saved {save_path.name}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Convert an STL mesh to a point cloud and plot it."
@@ -186,7 +294,7 @@ def main() -> None:
     parser.add_argument(
         "--samples-per-face",
         type=int,
-        default=30,
+        default=20,
         help="Number of samples per triangle face.",
     )
     parser.add_argument(
@@ -197,9 +305,29 @@ def main() -> None:
         help="Sampling strategy for converting mesh to points.",
     )
     parser.add_argument(
+        "--batch-thingi10k",
+        action="store_true",
+        help=(
+            "Process all STL files in data/thingi10k and save point clouds to "
+            "data/thingi10k_pointcloud."
+        ),
+    )
+    parser.add_argument(
         "--merge-vertices",
         action="store_true",
         help="Merge duplicate vertices (only applies to vertex sampling).",
+    )
+    parser.add_argument(
+        "--max-points",
+        type=int,
+        default=25000,
+        help="If set, downsample point clouds to at most this many points (e.g. 25000).",
+    )
+    parser.add_argument(
+        "--downsample-seed",
+        type=int,
+        default=None,
+        help="Optional RNG seed for downsampling.",
     )
     parser.add_argument(
         "--save",
@@ -209,6 +337,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.batch_thingi10k:
+        _batch_convert_thingi10k(
+            input_root=_default_thingi10k_root(),
+            output_root=_default_thingi10k_output(),
+            sample_mode=args.sample_mode,
+            samples_per_face=args.samples_per_face,
+            merge_vertices=args.merge_vertices,
+            max_points=args.max_points,
+            downsample_seed=args.downsample_seed,
+        )
+        return
+
     triangles, _ = read_stl(args.stl)
     sample = load_stl(
         args.stl,
@@ -216,11 +356,19 @@ def main() -> None:
         samples_per_face=args.samples_per_face,
         merge_vertices=args.merge_vertices,
     )
+    rng = np.random.default_rng(args.downsample_seed)
+    sample, downsampled = _downsample_sample(
+        sample,
+        max_points=args.max_points,
+        rng=rng,
+    )
 
     points = np.asarray(sample.points, dtype=float)
     normals = np.asarray(sample.normals, dtype=float)
 
     print(f"Loaded {points.shape[0]} points from {args.stl}")
+    if downsampled is not None and downsampled[0] != downsampled[1]:
+        print(f"Downsampled {downsampled[0]} -> {downsampled[1]} points")
 
     if args.save is not None:
         save_path = args.save
