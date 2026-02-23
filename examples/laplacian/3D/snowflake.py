@@ -108,8 +108,8 @@ def _print_eigenvalues(label: str, evals: np.ndarray):
 
 def main():
     data_path = _default_snowflake_path()
-    k = 20
-    alpha = 1.0 # TODO We need to crank this up to see a difference
+    k = 15
+    alpha = 8.0 # TODO We need to crank this up to see a difference
     normalized = True
 
     eig_k = 6

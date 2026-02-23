@@ -1,7 +1,7 @@
 """
 Snowflake Spectral Clustering Example
 -------------------------------------
-Compare Euclidean vs lifted spectral clustering on a snowflake point cloud.
+Compare k-means vs DBSCAN on spectral embeddings of a snowflake point cloud.
 """
 from __future__ import annotations
 
@@ -93,42 +93,80 @@ def _cluster_cmap(n_clusters: int):
 
 
 def _plot_clusters(ax, points: np.ndarray, labels: np.ndarray, title: str):
-    n_clusters = int(labels.max()) + 1 if labels.size else 0
+    labels = np.asarray(labels, dtype=int)
+    noise_mask = labels < 0
+    cluster_labels = labels[~noise_mask]
+
+    n_clusters = int(cluster_labels.max()) + 1 if cluster_labels.size else 0
     cmap = _cluster_cmap(max(n_clusters, 1))
-    sc = ax.scatter(
-        points[:, 0],
-        points[:, 1],
-        points[:, 2],
-        c=labels,
-        s=10.0,
-        cmap=cmap,
-        vmin=-0.5,
-        vmax=max(n_clusters - 0.5, 0.5),
-        alpha=0.9,
-    )
+
     ax.set_title(title)
+
+    if cluster_labels.size:
+        sc = ax.scatter(
+            points[~noise_mask, 0],
+            points[~noise_mask, 1],
+            points[~noise_mask, 2],
+            c=cluster_labels,
+            s=10.0,
+            cmap=cmap,
+            vmin=-0.5,
+            vmax=max(n_clusters - 0.5, 0.5),
+            alpha=0.9,
+        )
+        cbar = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
+        if n_clusters > 0:
+            cbar.set_ticks(np.arange(n_clusters))
+
+    if noise_mask.any():
+        ax.scatter(
+            points[noise_mask, 0],
+            points[noise_mask, 1],
+            points[noise_mask, 2],
+            s=8.0,
+            color="lightgray",
+            alpha=0.6,
+            label="Noise",
+        )
+        ax.legend(loc="best")
+
     _set_3d_equal_aspect(ax)
-    cbar = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
-    if n_clusters > 0:
-        cbar.set_ticks(np.arange(n_clusters))
 
 
 def _print_cluster_sizes(label: str, labels: np.ndarray):
     if labels.size == 0:
         print(f"{label}: empty labels")
         return
-    n_clusters = int(labels.max()) + 1
-    counts = np.bincount(labels, minlength=n_clusters)
-    print(f"{label} cluster sizes: {counts.tolist()}")
+    labels = np.asarray(labels, dtype=int)
+    noise = int(np.sum(labels < 0))
+    cluster_labels = labels[labels >= 0]
+    if cluster_labels.size == 0:
+        print(f"{label} cluster sizes: noise={noise}")
+        return
+    n_clusters = int(cluster_labels.max()) + 1
+    counts = np.bincount(cluster_labels, minlength=n_clusters)
+    if noise > 0:
+        print(f"{label} cluster sizes: {counts.tolist()} (noise={noise})")
+    else:
+        print(f"{label} cluster sizes: {counts.tolist()}")
+
+
+def _print_cluster_count(label: str, labels: np.ndarray):
+    labels = np.asarray(labels, dtype=int)
+    cluster_labels = labels[labels >= 0]
+    n_clusters = int(cluster_labels.max()) + 1 if cluster_labels.size else 0
+    print(f"{label} clusters found: {n_clusters}")
 
 
 def main():
     data_path = _default_snowflake_path()
-    n_clusters = 61 # We know there are 61 branches in the snowflake, so let's try to recover that.
-    k = 10
-    alpha = 30.0
+    n_clusters = 62 # We know there are 62 branches in the snowflake, so let's try to recover that.
+    k = 15
+    alpha = 20.0
     normalized = True
     random_state = 7
+    dbscan_eps = 0.2
+    dbscan_min_samples = 10
 
     points, normals = load_snowflake_points_and_normals(
         data_path,
@@ -137,14 +175,23 @@ def main():
 
     print(f"Loaded {points.shape[0]} points from {data_path}")
 
-    labels_euc, evals_euc, _, _ = spectral_clustering_pointcloud(
+    labels_euc_kmeans, evals_euc, _, _ = spectral_clustering_pointcloud(
         points,
         n_clusters=n_clusters,
         k=k,
         laplacian_normalized=normalized,
         random_state=random_state,
     )
-    labels_lift, evals_lift, _, _ = spectral_clustering_lifted(
+    labels_euc_dbscan, _, _, _ = spectral_clustering_pointcloud(
+        points,
+        n_clusters=n_clusters,
+        k=k,
+        laplacian_normalized=normalized,
+        cluster_method="dbscan",
+        dbscan_eps=dbscan_eps,
+        dbscan_min_samples=dbscan_min_samples,
+    )
+    labels_lift_kmeans, evals_lift, _, _ = spectral_clustering_lifted(
         points,
         normals,
         n_clusters=n_clusters,
@@ -153,18 +200,59 @@ def main():
         laplacian_normalized=normalized,
         random_state=random_state,
     )
+    labels_lift_dbscan, _, _, _ = spectral_clustering_lifted(
+        points,
+        normals,
+        n_clusters=n_clusters,
+        k=k,
+        alpha=alpha,
+        laplacian_normalized=normalized,
+        cluster_method="dbscan",
+        dbscan_eps=dbscan_eps,
+        dbscan_min_samples=dbscan_min_samples,
+    )
 
-    _print_cluster_sizes("Euclidean", labels_euc)
-    _print_cluster_sizes("Lifted", labels_lift)
+    _print_cluster_sizes("Euclidean (KMeans)", labels_euc_kmeans)
+    _print_cluster_count("Euclidean (KMeans)", labels_euc_kmeans)
+    _print_cluster_sizes("Euclidean (DBSCAN)", labels_euc_dbscan)
+    _print_cluster_count("Euclidean (DBSCAN)", labels_euc_dbscan)
+    _print_cluster_sizes("Lifted (KMeans)", labels_lift_kmeans)
+    _print_cluster_count("Lifted (KMeans)", labels_lift_kmeans)
+    _print_cluster_sizes("Lifted (DBSCAN)", labels_lift_dbscan)
+    _print_cluster_count("Lifted (DBSCAN)", labels_lift_dbscan)
 
-    fig = plt.figure(figsize=(12, 6))
-    ax_left = fig.add_subplot(1, 2, 1, projection="3d")
-    ax_right = fig.add_subplot(1, 2, 2, projection="3d")
+    fig = plt.figure(figsize=(12, 10))
+    ax_euc_kmeans = fig.add_subplot(2, 2, 1, projection="3d")
+    ax_euc_dbscan = fig.add_subplot(2, 2, 2, projection="3d")
+    ax_lift_kmeans = fig.add_subplot(2, 2, 3, projection="3d")
+    ax_lift_dbscan = fig.add_subplot(2, 2, 4, projection="3d")
 
-    _plot_clusters(ax_left, points, labels_euc, "Euclidean Spectral Clustering")
-    _plot_clusters(ax_right, points, labels_lift, "Lifted Spectral Clustering")
+    _plot_clusters(
+        ax_euc_kmeans,
+        points,
+        labels_euc_kmeans,
+        "Euclidean + KMeans",
+    )
+    _plot_clusters(
+        ax_euc_dbscan,
+        points,
+        labels_euc_dbscan,
+        f"Euclidean + DBSCAN (eps={dbscan_eps})",
+    )
+    _plot_clusters(
+        ax_lift_kmeans,
+        points,
+        labels_lift_kmeans,
+        "Lifted + KMeans",
+    )
+    _plot_clusters(
+        ax_lift_dbscan,
+        points,
+        labels_lift_dbscan,
+        f"Lifted + DBSCAN (eps={dbscan_eps})",
+    )
 
-    fig.suptitle("Snowflake Spectral Clustering: Euclidean vs Lifted")
+    fig.suptitle("Snowflake Spectral Clustering: KMeans vs DBSCAN")
     plt.tight_layout()
     plt.show()
 

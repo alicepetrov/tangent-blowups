@@ -136,7 +136,7 @@ def _sample_points(
     triangles: np.ndarray,
     normals: np.ndarray,
     *,
-    mode: Literal["faces", "vertices"],
+    mode: Literal["faces", "vertices", "uniform"],
     samples_per_face: int,
     rng: np.random.Generator,
     merge_vertices: bool,
@@ -170,6 +170,39 @@ def _sample_points(
         normals_out = np.repeat(normals, samples_per_face, axis=0)
         return points, normals_out
 
+    if mode == "uniform":
+        if samples_per_face <= 0:
+            raise ValueError("samples_per_face must be positive.")
+
+        n_samples = int(samples_per_face) * triangles.shape[0]
+        if n_samples == 0:
+            empty = np.zeros((0, 3), dtype=float)
+            return empty, empty
+
+        face_weights = np.linalg.norm(_compute_face_normals(triangles), axis=1)
+        total_weight = float(np.sum(face_weights))
+        if not np.isfinite(total_weight) or total_weight <= 0.0:
+            empty = np.zeros((0, 3), dtype=float)
+            return empty, empty
+
+        cdf = np.cumsum(face_weights)
+        u = rng.random(n_samples) * total_weight
+        triangle_idx = np.searchsorted(cdf, u, side="right")
+
+        v = rng.random((n_samples, 2))
+        sqrt_v0 = np.sqrt(v[:, 0])
+        bary_0 = 1.0 - sqrt_v0
+        bary_1 = v[:, 1] * sqrt_v0
+        bary_2 = 1.0 - (bary_0 + bary_1)
+
+        points = (
+            bary_0[:, None] * triangles[triangle_idx, 0, :]
+            + bary_1[:, None] * triangles[triangle_idx, 1, :]
+            + bary_2[:, None] * triangles[triangle_idx, 2, :]
+        )
+        normals_out = normals[triangle_idx]
+        return points, normals_out
+
     if mode == "vertices":
         points = triangles.reshape(-1, 3)
         normals_out = np.repeat(normals, 3, axis=0)
@@ -181,7 +214,9 @@ def _sample_points(
 
         return points, normals_out
 
-    raise ValueError(f"Unknown sample_mode '{mode}'. Expected 'faces' or 'vertices'.")
+    raise ValueError(
+        f"Unknown sample_mode '{mode}'. Expected 'faces', 'uniform', 'dense', or 'vertices'."
+    )
 
 
 def _sample_sharp_features(
@@ -391,7 +426,7 @@ def stl_mesh_to_oriented_point_cloud(
     triangles: np.ndarray,
     normals: Optional[np.ndarray] = None,
     *,
-    sample_mode: Literal["faces", "vertices", "dense"] = "faces",
+    sample_mode: Literal["faces", "vertices", "uniform", "dense"] = "uniform",
     samples_per_face: int = 1,
     dense_edge_samples: int = 6,
     dense_perp_angle_tol_deg: float = 10.0,
@@ -408,6 +443,7 @@ def stl_mesh_to_oriented_point_cloud(
     Convert a triangle mesh (from STL) into an oriented point cloud Sample.
 
     Returns a Sample with points, normals, and optional singularity markers.
+    Use sample_mode="uniform" to sample triangles proportionally to area.
     Use sample_mode="dense" to add extra samples along sharp edges and corners
     (faces with nearly perpendicular normals), duplicating points per face normal.
     Perpendicular is defined as |angle - 90 deg| <= dense_perp_angle_tol_deg.

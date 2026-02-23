@@ -50,6 +50,25 @@ def dist_chordal(U1, U2):
     P2 = projectors.basis_to_projector(U2)
     return projectors.chordal_distance(P1, P2)
 
+
+def _geodesic_distance_sq_batch(U: np.ndarray, V: np.ndarray) -> np.ndarray:
+    """
+    Compute squared geodesic distances from one subspace U to a batch of V.
+
+    Args:
+        U: (n, k) orthonormal matrix.
+        V: (M, n, k) orthonormal matrices.
+
+    Returns:
+        (M,) array of squared geodesic distances.
+    """
+    # Overlap matrices U^T V_j for all j: shape (M, k, k)
+    overlaps = np.einsum("nk,mnj->mkj", U, V)
+    s = np.linalg.svd(overlaps, compute_uv=False)
+    s = np.clip(s, 0.0, 1.0)
+    thetas = np.arccos(s)
+    return np.sum(thetas * thetas, axis=1)
+
 # -------------------------------------------------------------------------
 # Exponential and Logarithmic Maps (Tangent Space Ops)
 # -------------------------------------------------------------------------
@@ -301,9 +320,7 @@ class BlownUpSample:
             dist_u_sq = np.empty((self.N, other.N), dtype=float)
             for i in range(self.N):
                 Ui = self.basis[i]
-                for j in range(other.N):
-                    d = dist_geodesic(Ui, other.basis[j])
-                    dist_u_sq[i, j] = d * d
+                dist_u_sq[i] = _geodesic_distance_sq_batch(Ui, other.basis)
         else:
             raise ValueError(
                 f"Unknown subspace_metric '{subspace_metric}'. "
