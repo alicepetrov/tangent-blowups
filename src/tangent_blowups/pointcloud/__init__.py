@@ -5,6 +5,11 @@ from .laplacian import (
     laplacian_spectrum,
 )
 from .geodesic_heat import lifted_heat_method
+from .tangent_estimation import (
+    estimate_normals_pca,
+    estimate_tangents_pca,
+    estimate_normals_and_tangents_pca,
+)
 
 __all__ = [
     "knn_edges",
@@ -13,4 +18,7 @@ __all__ = [
     "lifted_pointcloud_laplacian",
     "laplacian_spectrum",
     "lifted_heat_method",
+    "estimate_normals_pca",
+    "estimate_tangents_pca",
+    "estimate_normals_and_tangents_pca",
 ]
