@@ -13,6 +13,9 @@ from tangent_blowups.testsupport import (
     lissajous,
     sample,
     square,
+    tangent_circle_line,
+    tangent_circles,
+    tangent_sine_line,
     triangle,
 )
 from tangent_blowups.viz.nash_coordinates import visualize_components, visualize_quiver
@@ -97,6 +100,9 @@ def main():
         ("Lissajous (3:4)", lissajous(a=3, b=4, delta=np.pi, scale=3.0), 2.0 * np.pi),
         ("Square", square(side=3.0), 4.0),
         ("Triangle", triangle(side=3.0), 3.0),
+        ("Tangent Circles", tangent_circles(radius=1.0), 2.0),
+        ("Tangent Circle-Line", tangent_circle_line(radius=1.0, line_length=4.0), 2.0),
+        ("Tangent Sine-Line", tangent_sine_line(amplitude=1.0), 2.0),
     ]
 
     for idx, (name, curve, t_max) in enumerate(curves):
