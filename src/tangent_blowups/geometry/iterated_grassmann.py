@@ -80,6 +80,7 @@ class BlowUpLevel:
         embedded: np.ndarray,  # (N, D)
         frame: np.ndarray,     # (N, D, d)
         level: int = 0,
+        n_orig: int | None = None,
     ) -> None:
         self.embedded = np.asarray(embedded, dtype=float)
         self.frame = np.asarray(frame, dtype=float)
@@ -92,6 +93,10 @@ class BlowUpLevel:
                 f"got {self.frame.shape}"
             )
         self.d = self.frame.shape[2]
+        # n_orig: dimension of the original ambient space (first n_orig coords of
+        # embedded are always the original spatial positions, at every level).
+        # Defaults to D at level 0 (where embedded == points, so D == n).
+        self.n_orig: int = int(n_orig) if n_orig is not None else self.D
         self.curvature_ops: np.ndarray | None = None  # (N, n_comp, d, d); set by lift()
 
     # ------------------------------------------------------------------
@@ -315,7 +320,9 @@ class BlowUpLevel:
             Q, _ = np.linalg.qr(G)
             U_next[i] = Q[:, :d]
 
-        result = BlowUpLevel(embedded=Phi_next, frame=U_next, level=self.level + 1)
+        result = BlowUpLevel(
+            embedded=Phi_next, frame=U_next, level=self.level + 1, n_orig=self.n_orig,
+        )
         result.curvature_ops = B_all
         return result
 
@@ -467,6 +474,7 @@ def extract_level1(level: BlowUpLevel) -> Level1Invariants:
 
 def extract_level2(
     level0: BlowUpLevel,
+    level1: BlowUpLevel,
     level1_inv: Level1Invariants,
     *,
     k: int = 16,
@@ -479,6 +487,14 @@ def extract_level2(
     by regressing shape-operator differences against level-0 intrinsic
     displacements (exact in geodesic normal coordinates at each point).
 
+    k-NN is performed in the level-1 Chordal-Sasaki metric (``level1.embedded``)
+    rather than in position space, consistent with how :meth:`BlowUpLevel.lift`
+    selects neighbours for curvature estimation.  This prevents cross-component
+    contamination near tangential intersection points, where both components are
+    close in position space but separated in the level-1 metric (because the
+    flat component has zero projector change between its own points, while a
+    cross-component step has a large projector change).
+
     The result::
 
         curvature_gradient[i, α, a, b, c] ≈ ∂_c h_{α,a,b}
@@ -487,6 +503,7 @@ def extract_level2(
 
     Args:
         level0:     The level-0 BlowUpLevel (original positions and tangent frames).
+        level1:     The level-1 BlowUpLevel (Chordal-Sasaki embedding for k-NN).
         level1_inv: Level1Invariants returned by :func:`extract_level1`.
         k:          Number of nearest neighbours for regression.
         lam:        Ridge regularisation parameter.
@@ -500,8 +517,9 @@ def extract_level2(
     n_comp = h_all.shape[1]
 
     k_eff = min(k, N - 1)
-    tree = cKDTree(level0.embedded)
-    _, nn_idx = tree.query(level0.embedded, k=k_eff + 1)
+    # k-NN in the level-1 Chordal-Sasaki space, consistent with lift()
+    tree = cKDTree(level1.embedded)
+    _, nn_idx = tree.query(level1.embedded, k=k_eff + 1)
     nn_idx = nn_idx[:, 1:]   # (N, k_eff) excluding self
 
     grad_h = np.zeros((N, n_comp, d, d, d), dtype=float)
@@ -509,10 +527,14 @@ def extract_level2(
     for i in range(N):
         Ui = level0.frame[i]          # (n, d)
         neighbors = nn_idx[i]         # (k_eff,)
+
+        # Intrinsic displacements in level-0 position space
         d_emb = level0.embedded[neighbors] - level0.embedded[i]   # (k_eff, n)
         t = d_emb @ Ui                                              # (k_eff, d)
 
-        dist2 = np.einsum("ki,ki->k", d_emb, d_emb)
+        # Gaussian weights from level-1 distances, consistent with lift()
+        d_l1 = level1.embedded[neighbors] - level1.embedded[i]    # (k_eff, D1)
+        dist2 = np.einsum("ki,ki->k", d_l1, d_l1)
         bw = dist2.max() if dist2.max() > 0.0 else 1.0
         w = np.exp(-dist2 / bw)                     # (k_eff,)
 
