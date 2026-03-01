@@ -144,7 +144,7 @@ def _graph_divergence(
     projectors: np.ndarray,
 ) -> np.ndarray:
     """
-    FIX: Correctly compute the integrated graph divergence using edge flux.
+    Compute the integrated graph divergence using edge flux.
     div_i = sum_j W_{ij} * ( (X_i + X_j)/2 * (x_j - x_i) )
     """
     n, dim = points.shape
@@ -253,7 +253,6 @@ def lifted_heat_method(
     rhs = np.zeros(n_points, dtype=float)
     rhs[src_idx] = 1.0
 
-    # FIX 1: Implicit Backward Euler requires (I + tL)
     A = sparse.eye(n_points, format="csr") + float(t) * L
     u = spla.spsolve(A, rhs)
 

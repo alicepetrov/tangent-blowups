@@ -12,7 +12,11 @@ def _reshape_optional(arr: Optional[np.ndarray]) -> Optional[np.ndarray]:
     if arr is None:
         return None
     arr = np.asarray(arr, dtype=float)
-    if arr.ndim > 2:
+    if arr.ndim > 3:
+        # Tangent frame from grid: (nu, nv, n, k) -> (N, n, k)
+        arr = arr.reshape(-1, arr.shape[-2], arr.shape[-1])
+    elif arr.ndim > 2:
+        # Vector from grid: (nu, nv, n) -> (N, n)
         arr = arr.reshape(-1, arr.shape[-1])
     return arr
 

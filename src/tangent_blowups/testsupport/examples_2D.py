@@ -73,17 +73,18 @@ def figure8(scale: float = 1.0) -> ParametricCurve:
 
     def norm(t: np.ndarray) -> np.ndarray:
         tvec = tan(t)
+        # CW rotation (t_y, -t_x): outward-pointing convention
         return np.stack([
-            -tvec[..., 1],
-            tvec[..., 0]
+            tvec[..., 1],
+            -tvec[..., 0]
         ], axis=-1)
 
     return ParametricCurve(
         position=pos,
         tangent=tan,
-        normal=norm, 
+        normal=norm,
     )
-    
+
 def lissajous(a: float = 3.0, b: float = 2.0, delta: float = np.pi / 2, scale: float = 1.0) -> ParametricCurve:
     """
     Returns the ParametricCurve for a Lissajous curve.
@@ -123,10 +124,10 @@ def lissajous(a: float = 3.0, b: float = 2.0, delta: float = np.pi / 2, scale: f
 
     def norm(t: np.ndarray) -> np.ndarray:
         tvec = tan(t)
-        # Rotate 90 degrees counter-clockwise: (x, y) -> (-y, x)
+        # CW rotation (t_y, -t_x): outward-pointing convention
         return np.stack([
-            -tvec[..., 1],
-            tvec[..., 0]
+            tvec[..., 1],
+            -tvec[..., 0]
         ], axis=-1)
 
     return ParametricCurve(

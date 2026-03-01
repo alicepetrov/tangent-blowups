@@ -170,7 +170,7 @@ def figure8_space(scale_xy: float = 1.0, scale_z: float = 0.5) -> ParametricCurv
     y = scale_xy * sin(t) * cos(t)
     z = scale_z  * sin(2t)
 
-    The curve intersects at the origin for t = 0, pi, 2*pi.
+    The curve intersects at the origin for t = 0, pi.
     Domain: t in [0, 2*pi]
     """
 
@@ -296,15 +296,12 @@ def whitney_umbrella(scale: float = 1.0) -> ParametricSurface:
     def tan(u: np.ndarray, v: np.ndarray) -> np.ndarray:
         u = np.asarray(u, dtype=float)
         v = np.asarray(v, dtype=float)
-        du = np.stack(
-            [
-                scale * v,
-                np.full_like(u, scale),
-                np.zeros_like(u),
-            ],
-            axis=-1,
-        )
-        return normalize_vectors(du)
+        du = np.stack([scale * v, np.full_like(u, scale), np.zeros_like(u)], axis=-1)
+        dv = np.stack([scale * u, np.zeros_like(u), 2.0 * scale * v], axis=-1)
+        e1 = normalize_vectors(du)
+        dv_perp = dv - np.sum(dv * e1, axis=-1, keepdims=True) * e1
+        e2 = normalize_vectors(dv_perp)
+        return np.stack([e1, e2], axis=-1)
 
     def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
         u = np.asarray(u, dtype=float)
@@ -360,15 +357,14 @@ def monkey_saddle(scale_xy: float = 1.0, scale_z: float = 0.25) -> ParametricSur
     def tan(u: np.ndarray, v: np.ndarray) -> np.ndarray:
         u = np.asarray(u, dtype=float)
         v = np.asarray(v, dtype=float)
-        du = np.stack(
-            [
-                np.full_like(u, scale_xy),
-                np.zeros_like(u),
-                scale_z * (3.0 * (u ** 2) - 3.0 * (v ** 2)),
-            ],
-            axis=-1,
-        )
-        return normalize_vectors(du)
+        du = np.stack([np.full_like(u, scale_xy), np.zeros_like(u),
+                       scale_z * (3.0 * (u ** 2) - 3.0 * (v ** 2))], axis=-1)
+        dv = np.stack([np.zeros_like(u), np.full_like(u, scale_xy),
+                       scale_z * (-6.0 * u * v)], axis=-1)
+        e1 = normalize_vectors(du)
+        dv_perp = dv - np.sum(dv * e1, axis=-1, keepdims=True) * e1
+        e2 = normalize_vectors(dv_perp)
+        return np.stack([e1, e2], axis=-1)
 
     def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
         u = np.asarray(u, dtype=float)
@@ -430,15 +426,28 @@ def klein_bottle(radius: float = 2.0, scale: float = 1.0) -> ParametricSurface:
         cuh = np.cos(0.5 * u)
         suh = np.sin(0.5 * u)
         sv = np.sin(v)
+        cv = np.cos(v)
         s2v = np.sin(2.0 * v)
+        c2v = np.cos(2.0 * v)
 
         a = radius + cuh * sv - suh * s2v
         dadu = -0.5 * (suh * sv + cuh * s2v)
+        dadv = cuh * cv - 2.0 * suh * c2v
 
-        dux = scale * (dadu * cu - a * su)
-        duy = scale * (dadu * su + a * cu)
-        duz = scale * (0.5 * (cuh * sv - suh * s2v))
-        return normalize_vectors(np.stack([dux, duy, duz], axis=-1))
+        du = np.stack([
+            scale * (dadu * cu - a * su),
+            scale * (dadu * su + a * cu),
+            scale * (0.5 * (cuh * sv - suh * s2v)),
+        ], axis=-1)
+        dv = np.stack([
+            scale * dadv * cu,
+            scale * dadv * su,
+            scale * (suh * cv + 2.0 * cuh * c2v),
+        ], axis=-1)
+        e1 = normalize_vectors(du)
+        dv_perp = dv - np.sum(dv * e1, axis=-1, keepdims=True) * e1
+        e2 = normalize_vectors(dv_perp)
+        return np.stack([e1, e2], axis=-1)
 
     def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
         u = np.asarray(u, dtype=float)
@@ -503,15 +512,12 @@ def cone(scale_r: float = 1.0, scale_z: float = 1.0) -> ParametricSurface:
     def tan(u: np.ndarray, v: np.ndarray) -> np.ndarray:
         u = np.asarray(u, dtype=float)
         v = np.asarray(v, dtype=float)
-        du = np.stack(
-            [
-                scale_r * np.cos(v),
-                scale_r * np.sin(v),
-                np.full_like(u, scale_z),
-            ],
-            axis=-1,
-        )
-        return normalize_vectors(du)
+        du = np.stack([scale_r * np.cos(v), scale_r * np.sin(v), np.full_like(u, scale_z)], axis=-1)
+        dv = np.stack([-scale_r * u * np.sin(v), scale_r * u * np.cos(v), np.zeros_like(u)], axis=-1)
+        e1 = normalize_vectors(du)
+        dv_perp = dv - np.sum(dv * e1, axis=-1, keepdims=True) * e1
+        e2 = normalize_vectors(dv_perp)
+        return np.stack([e1, e2], axis=-1)
 
     def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
         u = np.asarray(u, dtype=float)
@@ -574,10 +580,11 @@ def plane_cross(scale: float = 1.0) -> ParametricSurface:
         v = np.asarray(v, dtype=float)
         face = np.floor(u).astype(int)
         face = np.clip(face, 0, 1)
-        tx = np.ones_like(v)
-        ty = np.zeros_like(v)
-        tz = np.zeros_like(v)
-        return normalize_vectors(np.stack([tx, ty, tz], axis=-1))
+        e1 = np.stack([np.ones_like(v), np.zeros_like(v), np.zeros_like(v)], axis=-1)
+        vy = np.where(face == 0, 1.0, 0.0)
+        vz = np.where(face != 0, 1.0, 0.0)
+        e2 = np.stack([np.zeros_like(v), vy, vz], axis=-1)
+        return np.stack([e1, e2], axis=-1)
 
     def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
         u = np.asarray(u, dtype=float)
@@ -670,25 +677,37 @@ def cube_surface(scale: float = 1.0) -> ParametricSurface:
         ty = np.zeros_like(v)
         tz = np.zeros_like(v)
 
-        m0 = face == 0  # +X, along +Y
+        m0 = face == 0  # +X, u-dir along +Y
         tx[m0], ty[m0], tz[m0] = 0.0, 1.0, 0.0
 
-        m1 = face == 1  # -X, along -Y
+        m1 = face == 1  # -X, u-dir along -Y
         tx[m1], ty[m1], tz[m1] = 0.0, -1.0, 0.0
 
-        m2 = face == 2  # +Y, along -X
+        m2 = face == 2  # +Y, u-dir along -X
         tx[m2], ty[m2], tz[m2] = -1.0, 0.0, 0.0
 
-        m3 = face == 3  # -Y, along +X
+        m3 = face == 3  # -Y, u-dir along +X
         tx[m3], ty[m3], tz[m3] = 1.0, 0.0, 0.0
 
-        m4 = face == 4  # +Z, along +X
+        m4 = face == 4  # +Z, u-dir along +X
         tx[m4], ty[m4], tz[m4] = 1.0, 0.0, 0.0
 
-        m5 = face == 5  # -Z, along +X
+        m5 = face == 5  # -Z, u-dir along +X
         tx[m5], ty[m5], tz[m5] = 1.0, 0.0, 0.0
 
-        return normalize_vectors(np.stack([tx, ty, tz], axis=-1))
+        e1 = np.stack([tx, ty, tz], axis=-1)
+
+        vx = np.zeros_like(v)
+        vy = np.zeros_like(v)
+        vz = np.zeros_like(v)
+
+        # v-direction: +Z for faces 0-3, +Y for face 4, -Y for face 5
+        vz[face <= 3] = 1.0
+        vy[face == 4] = 1.0
+        vy[face == 5] = -1.0
+
+        e2 = np.stack([vx, vy, vz], axis=-1)
+        return np.stack([e1, e2], axis=-1)
 
     def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
         u = np.asarray(u, dtype=float)
@@ -741,16 +760,19 @@ def tetrahedron_surface(scale: float = 1.0) -> ParametricSurface:
     )
 
     face_normals = []
-    face_tangents = []
+    face_tangent_frames = []
     for f in faces:
         v0, v1, v2 = verts[f[0]], verts[f[1]], verts[f[2]]
         e0 = v1 - v0
-        e1 = v2 - v0
-        n = normalize_vectors(np.cross(e0, e1))
+        e1_vec = v2 - v0
+        n = normalize_vectors(np.cross(e0, e1_vec))
         face_normals.append(n)
-        face_tangents.append(normalize_vectors(e0))
+        t0 = normalize_vectors(e0)
+        e1_perp = e1_vec - np.dot(e1_vec, t0) * t0
+        t1 = normalize_vectors(e1_perp)
+        face_tangent_frames.append(np.stack([t0, t1], axis=-1))  # (3, 2)
     face_normals = np.asarray(face_normals).reshape(-1, 3)
-    face_tangents = np.asarray(face_tangents).reshape(-1, 3)
+    face_tangent_frames = np.array(face_tangent_frames)  # (4, 3, 2)
 
     def _barycentric(u_local: np.ndarray, v_local: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         s = u_local
@@ -790,7 +812,7 @@ def tetrahedron_surface(scale: float = 1.0) -> ParametricSurface:
         v = np.asarray(v, dtype=float)
         face = np.floor(u).astype(int)
         face = np.clip(face, 0, 3)
-        return face_tangents[face]
+        return face_tangent_frames[face]  # (..., 3, 2)
 
     def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
         u = np.asarray(u, dtype=float)

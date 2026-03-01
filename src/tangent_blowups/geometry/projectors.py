@@ -26,21 +26,16 @@ def chordal_distance(P1: np.ndarray, P2: np.ndarray) -> float:
     norm_sq = np.sum(diff**2) # faster than linalg.norm for pure arrays
     return np.sqrt(norm_sq) / np.sqrt(2)
 
-def principal_angles_from_projectors(P1: np.ndarray, P2: np.ndarray) -> np.ndarray:
+def subspace_alignment(P1: np.ndarray, P2: np.ndarray) -> float:
     """
-    Computes principal angles strictly from Projectors.
-    Use this if you don't have the bases U1, U2 handy.
-    
-    Theory:
-    Trace(P1 @ P2) = sum(cos^2(theta_i))
-    This gives us the "average" alignment, but recovering individual angles
-    requires an eigendecomposition of the product P1 P2 P1.
+    Returns the alignment score Tr(P1 @ P2) = sum(cos^2(theta_i)),
+    where theta_i are the principal angles between the two subspaces.
+
+    This is a scalar summary of subspace proximity, not the principal
+    angles themselves. To recover individual angles, use
+    grassmann.principal_angles() with orthonormal bases.
     """
-    # For full angles, it is usually numerically better to recover a basis 
-    # (eigenvectors of P) and use the SVD method in grassmann.py.
-    # But for a quick "alignment score":
-    alignment = np.trace(P1 @ P2)
-    return alignment
+    return float(np.trace(P1 @ P2))
 
 def mean_projector(projectors: np.ndarray) -> np.ndarray:
     """
