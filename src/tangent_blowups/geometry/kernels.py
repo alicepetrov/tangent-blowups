@@ -337,10 +337,18 @@ def product_affinity(
     dist2_spatial = np.einsum("ij,ij->i", dx, dx)
     kx = np.exp(-dist2_spatial / (sigma_x * sigma_x))
 
-    # Angular factor: ||P_i - P_j||_F^2 from the level-ell tangent projectors
-    P = level.projectors            # (N, D, D)
-    dP = P[rows] - P[cols]          # (E, D, D)
-    proj_dist2 = np.einsum("eij,eij->e", dP, dP)
+    # Angular factor: ||P_i - P_j||_F^2 via the chordal identity
+    #
+    #   ||P_i - P_j||_F^2 = 2d - 2 ||U_i^T U_j||_F^2
+    #
+    # where U_i = level.frame[i] has shape (D, d).  This avoids materialising
+    # the (N, D, D) projector matrices and the (E, D, D) edge-difference tensors.
+    # Cost:  O(E * D * d)  vs  O(E * D^2)  — for D=12, d=2: 6x cheaper;
+    # memory: O(E * d^2)  vs  O(E * D^2)  — 36x smaller intermediates.
+    U = level.frame                                    # (N, D, d)
+    M = np.einsum("eka,ekb->eab", U[rows], U[cols])   # (E, d, d): U_i^T U_j
+    inner_sq = np.einsum("eab,eab->e", M, M)          # ||U_i^T U_j||_F^2
+    proj_dist2 = 2.0 * level.d - 2.0 * inner_sq
     ku = np.exp(-proj_dist2 / (sigma_u * sigma_u))
 
     weights = kx * ku

@@ -9,8 +9,11 @@ from __future__ import annotations
 from typing import Literal
 
 import numpy as np
+import warnings
+
 from scipy import sparse
 from scipy.sparse import linalg as spla
+from scipy.sparse.linalg import ArpackNoConvergence
 
 from .neighbors import knn_edges, radius_edges
 from ..geometry.grassmann import BlownUpSample
@@ -427,7 +430,29 @@ def laplacian_spectrum(
             if which == "SM":
                 # SHIFT-INVERT MODE: Finds eigenvalues closest to `sigma`.
                 # We ask for "LM" of the shifted operator, which yields the "SM" of the original.
-                evals, evecs = spla.eigsh(Ls, k=k_eff, sigma=sigma, which="LM")
+                # Use a larger Krylov subspace (ncv) than the default min(max(2k+1,20), n).
+                # Densely-packed spectra (e.g. product kernels with near-zero weights) need
+                # more Lanczos vectors to resolve individual eigenpairs.
+                ncv = min(max(4 * k_eff + 1, 40), n - 1)
+                try:
+                    evals, evecs = spla.eigsh(
+                        Ls, k=k_eff, sigma=sigma, which="LM", ncv=ncv
+                    )
+                except ArpackNoConvergence as exc:
+                    if exc.eigenvalues.size >= k_eff:
+                        # Enough eigenpairs converged despite the exception.
+                        evals, evecs = exc.eigenvalues, exc.eigenvectors
+                    else:
+                        # Genuine failure: fall back to dense eigh.
+                        warnings.warn(
+                            f"ARPACK did not converge ({exc.eigenvalues.size}/{k_eff} "
+                            "eigenpairs). Falling back to dense eigh — may be slow for "
+                            "large N. Consider reducing N (--max-points) or adjusting "
+                            "kernel parameters.",
+                            RuntimeWarning,
+                            stacklevel=3,
+                        )
+                        evals, evecs = np.linalg.eigh(Ls.toarray())
             else:
                 # Standard mode for largest magnitude eigenvalues
                 evals, evecs = spla.eigsh(Ls, k=k_eff, which="LM")

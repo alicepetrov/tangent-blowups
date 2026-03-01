@@ -77,7 +77,7 @@ LAM       = 1e-3   # ridge regularisation for curvature regression
 
 K_KERNEL  = 12     # k-NN for affinity construction
 N_EIG     = 8      # eigenvalues to show in spectrum subplots
-JITTER    = 0.01   # spatial noise on figure-8 (avoids perfectly degenerate crossing)
+JITTER    = 0.01   # spatial noise
 SEED      = 42
 
 
@@ -125,6 +125,8 @@ def _build_line_parabola() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     s = sample(curve, strat, with_tangents=True, with_normals=False)
 
     pts  = np.asarray(s.points,   dtype=float)
+    rng = np.random.default_rng(SEED)
+    pts = pts + rng.normal(scale=JITTER, size=pts.shape)
     tans = np.asarray(s.tangents, dtype=float)
     t_p  = np.asarray(s.params,   dtype=float)
     gt   = (t_p >= 1.0).astype(int)
@@ -151,17 +153,18 @@ def _median_spatial_dist(level: BlowUpLevel) -> float:
 
 
 def _median_proj_dist(level: BlowUpLevel) -> float:
-    """Median Frobenius distance ||P_i - P_j||_F over k-NN pairs in level.embedded."""
+    """Median ||P_i - P_j||_F over k-NN pairs via the chordal identity."""
     tree = cKDTree(level.embedded)
     _, idx = tree.query(level.embedded, k=K_KERNEL + 1)
     idx = idx[:, 1:]
-    N = level.N
-    rows = np.repeat(np.arange(N), K_KERNEL)
+    rows = np.repeat(np.arange(level.N), K_KERNEL)
     cols = idx.ravel()
-    P  = level.projectors
-    dP = P[rows] - P[cols]
-    dist = np.sqrt(np.einsum("eij,eij->e", dP, dP))
-    return float(np.median(dist[dist > 0])) if np.any(dist > 0) else 1.0
+    U = level.frame                                    # (N, D, d)
+    M = np.einsum("eka,ekb->eab", U[rows], U[cols])   # (E, d, d)
+    inner_sq = np.einsum("eab,eab->e", M, M)
+    dist = np.sqrt(np.maximum(2.0 * level.d - 2.0 * inner_sq, 0.0))
+    pos = dist[dist > 0]
+    return float(np.median(pos)) if pos.size else 1.0
 
 
 # ---------------------------------------------------------------------------
