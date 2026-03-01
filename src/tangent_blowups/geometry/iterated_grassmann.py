@@ -29,6 +29,8 @@ Reference: theoretical notes on iterated tangent blow-ups / Nash blow-ups.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 from scipy.spatial import cKDTree
 
@@ -90,6 +92,7 @@ class BlowUpLevel:
                 f"got {self.frame.shape}"
             )
         self.d = self.frame.shape[2]
+        self.curvature_ops: np.ndarray | None = None  # (N, n_comp, d, d); set by lift()
 
     # ------------------------------------------------------------------
     # Factory
@@ -312,7 +315,9 @@ class BlowUpLevel:
             Q, _ = np.linalg.qr(G)
             U_next[i] = Q[:, :d]
 
-        return BlowUpLevel(embedded=Phi_next, frame=U_next, level=self.level + 1)
+        result = BlowUpLevel(embedded=Phi_next, frame=U_next, level=self.level + 1)
+        result.curvature_ops = B_all
+        return result
 
     # ------------------------------------------------------------------
     # Utilities
@@ -322,6 +327,212 @@ class BlowUpLevel:
         return (
             f"BlowUpLevel(level={self.level}, N={self.N}, D={self.D}, d={self.d})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Differential invariant containers
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Level0Invariants:
+    """
+    Differential invariants at blow-up level 0.
+
+    Basic geometric quantities of the original submanifold: position,
+    orthonormal tangent frame, and orthonormal normal frame.
+    """
+    points: np.ndarray        # (N, n)      position in original ambient space
+    tangent_frame: np.ndarray # (N, n, d)   orthonormal tangent basis
+    normal_frame: np.ndarray  # (N, n, n-d) orthonormal normal basis
+
+
+@dataclass
+class Level1Invariants:
+    """
+    Differential invariants at blow-up level 1 (second fundamental form).
+
+    shape_operator[i, α, a, b] = h_{α,a,b} is the symmetrised second
+    fundamental form in normal direction α, symmetric in tangent indices (a, b).
+
+    For hypersurfaces (n_comp == 1), principal curvatures/directions and
+    Gaussian curvature are also provided; otherwise they are None.
+    """
+    shape_operator: np.ndarray               # (N, n_comp, d, d)
+    mean_curvature: np.ndarray               # (N, n_comp)  H_α = tr(h_α) / d
+    total_curvature: np.ndarray              # (N, n_comp)  ||h_α||_F
+    principal_curvatures: np.ndarray | None  # (N, d)       hypersurface only
+    principal_directions: np.ndarray | None  # (N, d, d)    hypersurface only
+    gaussian_curvature: np.ndarray | None    # (N,)         hypersurface only
+
+
+@dataclass
+class Level2Invariants:
+    """
+    Differential invariants at blow-up level 2 (Codazzi tensor).
+
+    curvature_gradient[i, α, a, b, c] = ∂_c h_{α,a,b} approximates the
+    covariant derivative of the shape operator (Codazzi tensor), estimated
+    by regressing shape-operator differences against intrinsic displacements
+    using the level-0 geometry.
+    """
+    curvature_gradient: np.ndarray   # (N, n_comp, d, d, d)
+
+
+# ---------------------------------------------------------------------------
+# Extraction functions
+# ---------------------------------------------------------------------------
+
+def extract_level0(level: BlowUpLevel) -> Level0Invariants:
+    """
+    Extract level-0 differential invariants: position, tangent, and normal frame.
+
+    Args:
+        level: A level-0 BlowUpLevel.
+
+    Returns:
+        Level0Invariants with fields ``points``, ``tangent_frame``, ``normal_frame``.
+
+    Raises:
+        ValueError: if ``level.level != 0``.
+    """
+    if level.level != 0:
+        raise ValueError(f"Expected a level-0 BlowUpLevel, got level={level.level}")
+    return Level0Invariants(
+        points=level.embedded,
+        tangent_frame=level.frame,
+        normal_frame=level._complement_frames(),
+    )
+
+
+def extract_level1(level: BlowUpLevel) -> Level1Invariants:
+    """
+    Extract level-1 differential invariants from a lifted BlowUpLevel.
+
+    The input must have been produced by ``BlowUpLevel.lift()`` so that
+    ``curvature_ops`` is populated (typically a level-1 object).
+
+    The curvature operator B_all[i] of shape (n_comp, d, d) encodes the
+    second fundamental form via::
+
+        h[i, α, a, b] = B_all[i, α, b, a]
+
+    which is then symmetrised over (a, b).
+
+    Args:
+        level: A BlowUpLevel with ``curvature_ops`` set (output of ``.lift()``).
+
+    Returns:
+        Level1Invariants.
+
+    Raises:
+        ValueError: if ``curvature_ops`` is None.
+    """
+    if level.curvature_ops is None:
+        raise ValueError(
+            "curvature_ops is not set. Pass a BlowUpLevel produced by .lift()."
+        )
+    B_all = level.curvature_ops   # (N, n_comp, d, d); B_all[i, α, b, a] = B_i(e_a)[α, b]
+    N, n_comp, d, _ = B_all.shape
+
+    # h[i, α, a, b] = B_all[i, α, b, a]  →  transpose last two axes then symmetrize
+    raw_h = B_all.transpose(0, 1, 3, 2)               # (N, n_comp, d, d) with axes (i,α,a,b)
+    shape_op = (raw_h + raw_h.transpose(0, 1, 3, 2)) / 2.0  # symmetrize over (a, b)
+
+    # Mean curvature: H_α = tr(h_α) / d
+    mean_curv = np.trace(shape_op, axis1=2, axis2=3) / d    # (N, n_comp)
+
+    # Total curvature: ||h_α||_F
+    total_curv = np.sqrt(np.einsum("nabc,nabc->na", shape_op, shape_op))  # (N, n_comp)
+
+    if n_comp == 1:
+        S = shape_op[:, 0, :, :]                       # (N, d, d)
+        evals, evecs = np.linalg.eigh(S)               # evals (N,d) ascending, evecs (N,d,d)
+        principal_curvatures: np.ndarray | None = evals
+        principal_directions: np.ndarray | None = evecs
+        gaussian_curvature: np.ndarray | None = np.prod(evals, axis=1)  # (N,)
+    else:
+        principal_curvatures = None
+        principal_directions = None
+        gaussian_curvature = None
+
+    return Level1Invariants(
+        shape_operator=shape_op,
+        mean_curvature=mean_curv,
+        total_curvature=total_curv,
+        principal_curvatures=principal_curvatures,
+        principal_directions=principal_directions,
+        gaussian_curvature=gaussian_curvature,
+    )
+
+
+def extract_level2(
+    level0: BlowUpLevel,
+    level1_inv: Level1Invariants,
+    *,
+    k: int = 16,
+    lam: float = 1e-3,
+) -> Level2Invariants:
+    """
+    Estimate level-2 differential invariants: the gradient of the shape operator.
+
+    Approximates the covariant derivative ∂_c h_{α,a,b} of the shape operator
+    by regressing shape-operator differences against level-0 intrinsic
+    displacements (exact in geodesic normal coordinates at each point).
+
+    The result::
+
+        curvature_gradient[i, α, a, b, c] ≈ ∂_c h_{α,a,b}
+
+    encodes the Codazzi tensor.
+
+    Args:
+        level0:     The level-0 BlowUpLevel (original positions and tangent frames).
+        level1_inv: Level1Invariants returned by :func:`extract_level1`.
+        k:          Number of nearest neighbours for regression.
+        lam:        Ridge regularisation parameter.
+
+    Returns:
+        Level2Invariants with ``curvature_gradient`` of shape (N, n_comp, d, d, d).
+    """
+    N = level0.N
+    d = level0.d
+    h_all = level1_inv.shape_operator   # (N, n_comp, d, d)
+    n_comp = h_all.shape[1]
+
+    k_eff = min(k, N - 1)
+    tree = cKDTree(level0.embedded)
+    _, nn_idx = tree.query(level0.embedded, k=k_eff + 1)
+    nn_idx = nn_idx[:, 1:]   # (N, k_eff) excluding self
+
+    grad_h = np.zeros((N, n_comp, d, d, d), dtype=float)
+
+    for i in range(N):
+        Ui = level0.frame[i]          # (n, d)
+        neighbors = nn_idx[i]         # (k_eff,)
+        d_emb = level0.embedded[neighbors] - level0.embedded[i]   # (k_eff, n)
+        t = d_emb @ Ui                                              # (k_eff, d)
+
+        dist2 = np.einsum("ki,ki->k", d_emb, d_emb)
+        bw = dist2.max() if dist2.max() > 0.0 else 1.0
+        w = np.exp(-dist2 / bw)                     # (k_eff,)
+
+        dh = h_all[neighbors] - h_all[i]            # (k_eff, n_comp, d, d)
+        dh_flat = dh.reshape(k_eff, n_comp * d * d)
+
+        wt = w[:, np.newaxis] * t                   # (k_eff, d)
+        TWT = wt.T @ t + lam * np.eye(d)            # (d, d)
+        TWdh = wt.T @ dh_flat                        # (d, n_comp*d^2)
+
+        try:
+            G_flat = np.linalg.solve(TWT, TWdh)     # (d, n_comp*d^2)
+        except np.linalg.LinAlgError:
+            continue
+
+        # G_flat[c, α*d²+a*d+b] = ∂_c h_{α,a,b}
+        # grad_h[i, α, a, b, c] = G_flat.T[α*d²+a*d+b, c]
+        grad_h[i] = G_flat.T.reshape(n_comp, d, d, d)
+
+    return Level2Invariants(curvature_gradient=grad_h)
 
 
 # ---------------------------------------------------------------------------
@@ -362,4 +573,12 @@ __all__ = [
     "BlowUpLevel",
     "iterated_blowup",
     "ambient_dim_sequence",
+    # Invariant containers
+    "Level0Invariants",
+    "Level1Invariants",
+    "Level2Invariants",
+    # Extraction functions
+    "extract_level0",
+    "extract_level1",
+    "extract_level2",
 ]
