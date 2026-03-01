@@ -220,6 +220,72 @@ def tangent_sine_line(
     )
 
 
+def tangent_parabola_line(
+    curvature: float = 1.0,
+    x_min: float = -1.5,
+    x_max: float = 1.5,
+) -> ParametricCurve:
+    """
+    Parabola tangent to a horizontal line.
+
+    Parabola: y = curvature * x^2
+    Line: y = 0
+    Tangency point: (0, 0) with horizontal tangent direction.
+
+    Domain: t in [0, 2), each unit interval traces one component.
+    """
+
+    def pos(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, 2.0)
+        m0 = s < 1.0
+
+        x = np.zeros_like(s, dtype=float)
+        y = np.zeros_like(s, dtype=float)
+
+        x[m0] = x_min + (x_max - x_min) * s[m0]
+        y[m0] = curvature * x[m0] ** 2
+
+        s1 = s[~m0] - 1.0
+        x[~m0] = x_min + (x_max - x_min) * s1
+        y[~m0] = 0.0
+
+        return np.stack([x, y], axis=-1)
+
+    def tan(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, 2.0)
+        m0 = s < 1.0
+
+        x = x_min + (x_max - x_min) * s
+        dy_dx = 2.0 * curvature * x
+
+        tx = np.ones_like(s, dtype=float)
+        ty = np.zeros_like(s, dtype=float)
+
+        ty[m0] = dy_dx[m0]
+        ty[~m0] = 0.0
+
+        denom = np.sqrt(tx * tx + ty * ty)
+        denom[denom == 0] = 1.0
+
+        return np.stack([tx / denom, ty / denom], axis=-1)
+
+    def norm(t: np.ndarray) -> np.ndarray:
+        tvec = tan(t)
+        return np.stack(
+            [
+                tvec[..., 1],
+                -tvec[..., 0],
+            ],
+            axis=-1,
+        )
+
+    return ParametricCurve(
+        position=pos,
+        tangent=tan,
+        normal=norm,
+    )
+
+
 def figure8(scale: float = 1.0) -> ParametricCurve:
     """
     Returns the ParametricCurve for a self-intersecting figure-8 curve.

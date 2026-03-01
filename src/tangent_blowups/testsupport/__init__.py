@@ -24,6 +24,7 @@ from .examples_2D import (
     tangent_circles,
     tangent_circle_line,
     tangent_sine_line,
+    tangent_parabola_line,
 )
 from .examples_3D import (
     helix,
@@ -77,6 +78,7 @@ __all__ = [
     "tangent_circles",
     "tangent_circle_line",
     "tangent_sine_line",
+    "tangent_parabola_line",
     "helix",
     "trefoil_knot",
     "space_lissajous",
