@@ -15,7 +15,16 @@ from .samplers import (
     JitteredSurface,
     ChebyshevGrid,
 )
-from .examples_2D import circle, figure8, lissajous, square, triangle
+from .examples_2D import (
+    circle,
+    figure8,
+    lissajous,
+    square,
+    triangle,
+    tangent_circles,
+    tangent_circle_line,
+    tangent_sine_line,
+)
 from .examples_3D import (
     helix,
     trefoil_knot,
@@ -30,6 +39,8 @@ from .examples_3D import (
     cone,
     klein_bottle,
     plane_cross,
+    plane_paraboloid_tangent,
+    tangent_spheres,
     cube_surface,
     tetrahedron_surface,
 )
@@ -63,6 +74,9 @@ __all__ = [
     "lissajous",
     "square",
     "triangle",
+    "tangent_circles",
+    "tangent_circle_line",
+    "tangent_sine_line",
     "helix",
     "trefoil_knot",
     "space_lissajous",
@@ -75,6 +89,8 @@ __all__ = [
     "monkey_saddle",
     "cone",
     "plane_cross",
+    "plane_paraboloid_tangent",
+    "tangent_spheres",
     "cube_surface",
     "tetrahedron_surface",
     "klein_bottle",

@@ -606,6 +606,202 @@ def plane_cross(scale: float = 1.0) -> ParametricSurface:
     return ParametricSurface(position=pos, tangent=tan, normal=norm)
 
 
+def plane_paraboloid_tangent(scale_xy: float = 1.0, scale_z: float = 0.25) -> ParametricSurface:
+    """
+    Plane and paraboloid tangent at the origin.
+
+    Plane: z = 0
+    Paraboloid: z = scale_z * (x^2 + y^2)
+
+    Domain:
+      u in [0, 2), v in [0, 1]
+    """
+    def pos(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.floor(u).astype(int)
+        face = np.clip(face, 0, 1)
+        s = u - face
+        a = (s - 0.5) * 2.0 * scale_xy
+        b = (v - 0.5) * 2.0 * scale_xy
+
+        x = a
+        y = b
+        z = np.zeros_like(a)
+
+        m1 = face != 0
+        z[m1] = scale_z * (a[m1] ** 2 + b[m1] ** 2)
+
+        return np.stack([x, y, z], axis=-1)
+
+    def tan(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.floor(u).astype(int)
+        face = np.clip(face, 0, 1)
+        s = u - face
+        a = (s - 0.5) * 2.0 * scale_xy
+        b = (v - 0.5) * 2.0 * scale_xy
+
+        du_z = np.where(face == 0, 0.0, 4.0 * scale_z * scale_xy * a)
+        dv_z = np.where(face == 0, 0.0, 4.0 * scale_z * scale_xy * b)
+
+        du = np.stack(
+            [
+                np.full_like(a, 2.0 * scale_xy),
+                np.zeros_like(a),
+                du_z,
+            ],
+            axis=-1,
+        )
+        dv = np.stack(
+            [
+                np.zeros_like(a),
+                np.full_like(a, 2.0 * scale_xy),
+                dv_z,
+            ],
+            axis=-1,
+        )
+        e1 = normalize_vectors(du)
+        dv_perp = dv - np.sum(dv * e1, axis=-1, keepdims=True) * e1
+        e2 = normalize_vectors(dv_perp)
+        return np.stack([e1, e2], axis=-1)
+
+    def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.floor(u).astype(int)
+        face = np.clip(face, 0, 1)
+        s = u - face
+        a = (s - 0.5) * 2.0 * scale_xy
+        b = (v - 0.5) * 2.0 * scale_xy
+
+        du_z = np.where(face == 0, 0.0, 4.0 * scale_z * scale_xy * a)
+        dv_z = np.where(face == 0, 0.0, 4.0 * scale_z * scale_xy * b)
+
+        du = np.stack(
+            [
+                np.full_like(a, 2.0 * scale_xy),
+                np.zeros_like(a),
+                du_z,
+            ],
+            axis=-1,
+        )
+        dv = np.stack(
+            [
+                np.zeros_like(a),
+                np.full_like(a, 2.0 * scale_xy),
+                dv_z,
+            ],
+            axis=-1,
+        )
+        n = np.cross(du, dv)
+        return normalize_vectors(n)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
+def tangent_spheres(radius: float = 1.0) -> ParametricSurface:
+    """
+    Two spheres tangent at the origin.
+
+    Centers: (-radius, 0, 0) and (+radius, 0, 0)
+
+    Domain:
+      u in [0, 2), v in [0, 1]
+    """
+    def pos(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.floor(u).astype(int)
+        face = np.clip(face, 0, 1)
+        s = u - face
+        theta = 2.0 * np.pi * s
+        phi = np.pi * v
+
+        cx = np.where(face == 0, -radius, radius)
+        sin_phi = np.sin(phi)
+        cos_phi = np.cos(phi)
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+
+        x = cx + radius * cos_theta * sin_phi
+        y = radius * sin_theta * sin_phi
+        z = radius * cos_phi
+
+        return np.stack([x, y, z], axis=-1)
+
+    def tan(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.floor(u).astype(int)
+        face = np.clip(face, 0, 1)
+        s = u - face
+        theta = 2.0 * np.pi * s
+        phi = np.pi * v
+
+        sin_phi = np.sin(phi)
+        cos_phi = np.cos(phi)
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+
+        du = np.stack(
+            [
+                -2.0 * np.pi * radius * sin_theta * sin_phi,
+                2.0 * np.pi * radius * cos_theta * sin_phi,
+                np.zeros_like(sin_phi),
+            ],
+            axis=-1,
+        )
+        dv = np.stack(
+            [
+                np.pi * radius * cos_theta * cos_phi,
+                np.pi * radius * sin_theta * cos_phi,
+                -np.pi * radius * sin_phi,
+            ],
+            axis=-1,
+        )
+        e1 = normalize_vectors(du)
+        dv_perp = dv - np.sum(dv * e1, axis=-1, keepdims=True) * e1
+        e2 = normalize_vectors(dv_perp)
+        return np.stack([e1, e2], axis=-1)
+
+    def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.floor(u).astype(int)
+        face = np.clip(face, 0, 1)
+        s = u - face
+        theta = 2.0 * np.pi * s
+        phi = np.pi * v
+
+        sin_phi = np.sin(phi)
+        cos_phi = np.cos(phi)
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+
+        du = np.stack(
+            [
+                -2.0 * np.pi * radius * sin_theta * sin_phi,
+                2.0 * np.pi * radius * cos_theta * sin_phi,
+                np.zeros_like(sin_phi),
+            ],
+            axis=-1,
+        )
+        dv = np.stack(
+            [
+                np.pi * radius * cos_theta * cos_phi,
+                np.pi * radius * sin_theta * cos_phi,
+                -np.pi * radius * sin_phi,
+            ],
+            axis=-1,
+        )
+        n = np.cross(du, dv)
+        return normalize_vectors(n)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
 def cube_surface(scale: float = 1.0) -> ParametricSurface:
     """
     Axis-aligned cube surface with sharp edges and corners.
@@ -838,6 +1034,8 @@ __all__ = [
     "klein_bottle",
     "cone",
     "plane_cross",
+    "plane_paraboloid_tangent",
+    "tangent_spheres",
     "cube_surface",
     "tetrahedron_surface",
 ]

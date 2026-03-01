@@ -37,6 +37,188 @@ def circle(radius: float = 1.0) -> ParametricCurve:
         normal=norm,
     )
 
+def tangent_circles(radius: float = 1.0) -> ParametricCurve:
+    """
+    Two tangent circles ("kissing circles") sharing a common tangent point.
+
+    Centers: (0, +radius) and (0, -radius)
+    Tangent point: (0, 0) with horizontal tangent direction.
+
+    Domain: t in [0, 2), each unit interval traces one circle.
+    """
+
+    def pos(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, 2.0)
+        m0 = s < 1.0
+        theta = np.where(
+            m0,
+            2.0 * np.pi * s - 0.5 * np.pi,
+            0.5 * np.pi - 2.0 * np.pi * (s - 1.0),
+        )
+        cy = np.where(m0, radius, -radius)
+        x = radius * np.cos(theta)
+        y = cy + radius * np.sin(theta)
+        return np.stack([x, y], axis=-1)
+
+    def tan(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, 2.0)
+        m0 = s < 1.0
+        theta = np.where(
+            m0,
+            2.0 * np.pi * s - 0.5 * np.pi,
+            0.5 * np.pi - 2.0 * np.pi * (s - 1.0),
+        )
+        sign = np.where(m0, 1.0, -1.0)
+        tx = sign * (-np.sin(theta))
+        ty = sign * (np.cos(theta))
+        return np.stack([tx, ty], axis=-1)
+
+    def norm(t: np.ndarray) -> np.ndarray:
+        tvec = tan(t)
+        return np.stack(
+            [
+                tvec[..., 1],
+                -tvec[..., 0],
+            ],
+            axis=-1,
+        )
+
+    return ParametricCurve(
+        position=pos,
+        tangent=tan,
+        normal=norm,
+    )
+
+def tangent_circle_line(radius: float = 1.0, line_length: float = 4.0) -> ParametricCurve:
+    """
+    Circle tangent to a straight line.
+
+    Circle center: (0, +radius) with radius = radius
+    Line: y = 0 (x-axis)
+    Tangency point: (0, 0) with horizontal tangent direction.
+
+    Domain: t in [0, 2), each unit interval traces one component.
+    """
+
+    def pos(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, 2.0)
+        m0 = s < 1.0
+        theta = 2.0 * np.pi * s - 0.5 * np.pi
+
+        x = np.zeros_like(s, dtype=float)
+        y = np.zeros_like(s, dtype=float)
+
+        x[m0] = radius * np.cos(theta[m0])
+        y[m0] = radius + radius * np.sin(theta[m0])
+
+        s1 = s[~m0] - 1.0
+        x[~m0] = -0.5 * line_length + line_length * s1
+        y[~m0] = 0.0
+
+        return np.stack([x, y], axis=-1)
+
+    def tan(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, 2.0)
+        m0 = s < 1.0
+        theta = 2.0 * np.pi * s - 0.5 * np.pi
+
+        tx = np.zeros_like(s, dtype=float)
+        ty = np.zeros_like(s, dtype=float)
+
+        tx[m0] = -np.sin(theta[m0])
+        ty[m0] = np.cos(theta[m0])
+
+        tx[~m0] = 1.0
+        ty[~m0] = 0.0
+
+        return np.stack([tx, ty], axis=-1)
+
+    def norm(t: np.ndarray) -> np.ndarray:
+        tvec = tan(t)
+        return np.stack(
+            [
+                tvec[..., 1],
+                -tvec[..., 0],
+            ],
+            axis=-1,
+        )
+
+    return ParametricCurve(
+        position=pos,
+        tangent=tan,
+        normal=norm,
+    )
+
+
+def tangent_sine_line(
+    amplitude: float = 1.0,
+    x_min: float = 0.0,
+    x_max: float = 2.0 * np.pi,
+    phase: float = 0.0,
+) -> ParametricCurve:
+    """
+    Sine wave tangent to a horizontal line.
+
+    Sine: y = amplitude * sin(x + phase)
+    Line: y = amplitude
+    Tangency point: x = pi/2 - phase (assuming it lies in [x_min, x_max])
+
+    Domain: t in [0, 2), each unit interval traces one component.
+    """
+
+    def pos(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, 2.0)
+        m0 = s < 1.0
+
+        x = np.zeros_like(s, dtype=float)
+        y = np.zeros_like(s, dtype=float)
+
+        x[m0] = x_min + (x_max - x_min) * s[m0]
+        y[m0] = amplitude * np.sin(x[m0] + phase)
+
+        s1 = s[~m0] - 1.0
+        x[~m0] = x_min + (x_max - x_min) * s1
+        y[~m0] = amplitude
+
+        return np.stack([x, y], axis=-1)
+
+    def tan(t: np.ndarray) -> np.ndarray:
+        s = np.mod(t, 2.0)
+        m0 = s < 1.0
+
+        tx = np.zeros_like(s, dtype=float)
+        ty = np.zeros_like(s, dtype=float)
+
+        x = x_min + (x_max - x_min) * s
+        dy_dx = amplitude * np.cos(x + phase)
+
+        tx[m0] = 1.0
+        ty[m0] = dy_dx[m0]
+
+        tx[~m0] = 1.0
+        ty[~m0] = 0.0
+
+        denom = np.sqrt(tx * tx + ty * ty)
+        denom[denom == 0] = 1.0
+
+        return np.stack([tx / denom, ty / denom], axis=-1)
+
+    def norm(t: np.ndarray) -> np.ndarray:
+        tvec = tan(t)
+        return np.stack(
+            [
+                tvec[..., 1],
+                -tvec[..., 0],
+            ],
+            axis=-1,
+        )
+
+    return ParametricCurve(
+        position=pos,
+        tangent=tan,
+        normal=norm,
+    )
+
 
 def figure8(scale: float = 1.0) -> ParametricCurve:
     """
