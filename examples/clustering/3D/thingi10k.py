@@ -1,7 +1,7 @@
 """
 Point Cloud Spectral Clustering Example
 ---------------------------------------
-Compare k-means vs DBSCAN on spectral embeddings of a point cloud.
+Compare k-means, DBSCAN, and HDBSCAN on spectral embeddings of a point cloud.
 """
 from __future__ import annotations
 
@@ -12,11 +12,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 
-from tangent_blowups.clustering import (
-    spectral_clustering_pointcloud,
-    spectral_clustering_lifted,
-)
+from sklearn.cluster import HDBSCAN
+
+from tangent_blowups.clustering import spectral_clustering_from_laplacian
+from tangent_blowups.geometry.grassmann import BlownUpSample
+from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
+from tangent_blowups.geometry.kernels import lifted_laplacian
 from tangent_blowups.io.load import load_pointcloud
+from tangent_blowups.pointcloud import pointcloud_laplacian
 from tangent_blowups.solvers.linalg import normalize_vectors
 
 
@@ -186,116 +189,134 @@ def main():
             "resolved under data/thingi10k_pointcloud."
         ),
     )
+    parser.add_argument(
+        "--num-levels", type=int, default=1,
+        help="Number of blow-up levels to compute (default: 1, try 2 for curvature).",
+    )
+    parser.add_argument(
+        "--kernel", type=str, default="self_tuning",
+        choices=["self_tuning", "gaussian", "product"],
+        help="Kernel family for the lifted Laplacian (default: self_tuning).",
+    )
     args = parser.parse_args()
 
     data_path = _resolve_pointcloud_path(args.pointcloud)
     cloud_label = data_path.stem
-    n_clusters = 20 # Adjust this based on the expected number of clusters in the point cloud.
+    num_levels = args.num_levels
+    kernel = args.kernel
+    n_clusters = 20
     k = 20
-    alpha = 10.0 # Larger alpha emphasizes normal similarity more, smaller alpha emphasizes spatial proximity more.
+    alpha = 5.0
+    lam = 1e-3
     normalized = True
     random_state = 7
     dbscan_eps = 0.2
     dbscan_min_samples = 10
+    hdbscan_min_cluster_size = 25
 
     points, normals = load_pointcloud_points_and_normals(
         data_path,
         normal_eps=1e-8,
     )
-
     print(f"Loaded {points.shape[0]} points from {data_path}")
 
-    labels_euc_kmeans, evals_euc, _, _ = spectral_clustering_pointcloud(
-        points,
-        n_clusters=n_clusters,
-        k=k,
-        laplacian_normalized=normalized,
-        random_state=random_state,
-    )
-    labels_euc_dbscan, _, _, _ = spectral_clustering_pointcloud(
-        points,
-        n_clusters=n_clusters,
-        k=k,
-        laplacian_normalized=normalized,
-        cluster_method="dbscan",
-        dbscan_eps=dbscan_eps,
-        dbscan_min_samples=dbscan_min_samples,
-    )
-    labels_lift_kmeans, evals_lift, _, _ = spectral_clustering_lifted(
-        points,
-        normals,
-        n_clusters=n_clusters,
-        k=k,
-        alpha=alpha,
-        laplacian_normalized=normalized,
-        random_state=random_state,
-        subspace_metric="chordal"
-    )
-    labels_lift_dbscan, _, _, _ = spectral_clustering_lifted(
-        points,
-        normals,
-        n_clusters=n_clusters,
-        k=k,
-        alpha=alpha,
-        laplacian_normalized=normalized,
-        cluster_method="dbscan",
-        dbscan_eps=dbscan_eps,
-        dbscan_min_samples=dbscan_min_samples,
-        subspace_metric="chordal"
-    )
+    # ------------------------------------------------------------------
+    # Helper: cluster a Laplacian with all three methods
+    # ------------------------------------------------------------------
+    def _cluster_laplacian(L, tag: str):
+        """Return (labels_km, labels_db, labels_hdb, evals)."""
+        labels_km, evals, _, embedding = spectral_clustering_from_laplacian(
+            L, n_clusters, random_state=random_state,
+        )
+        labels_db, _, _, _ = spectral_clustering_from_laplacian(
+            L, n_clusters,
+            cluster_method="dbscan",
+            dbscan_eps=dbscan_eps,
+            dbscan_min_samples=dbscan_min_samples,
+        )
+        labels_hdb = HDBSCAN(
+            min_cluster_size=hdbscan_min_cluster_size,
+        ).fit_predict(embedding)
 
-    _print_cluster_sizes("Euclidean (KMeans)", labels_euc_kmeans)
-    _print_cluster_count("Euclidean (KMeans)", labels_euc_kmeans)
-    _print_cluster_sizes("Euclidean (DBSCAN)", labels_euc_dbscan)
-    _print_cluster_count("Euclidean (DBSCAN)", labels_euc_dbscan)
-    _print_cluster_sizes("Lifted (KMeans)", labels_lift_kmeans)
-    _print_cluster_count("Lifted (KMeans)", labels_lift_kmeans)
-    _print_cluster_sizes("Lifted (DBSCAN)", labels_lift_dbscan)
-    _print_cluster_count("Lifted (DBSCAN)", labels_lift_dbscan)
+        _print_cluster_sizes(f"{tag} (KMeans)", labels_km)
+        _print_cluster_count(f"{tag} (KMeans)", labels_km)
+        _print_cluster_sizes(f"{tag} (DBSCAN)", labels_db)
+        _print_cluster_count(f"{tag} (DBSCAN)", labels_db)
+        _print_cluster_sizes(f"{tag} (HDBSCAN)", labels_hdb)
+        _print_cluster_count(f"{tag} (HDBSCAN)", labels_hdb)
+        return labels_km, labels_db, labels_hdb, evals
 
-    fig = plt.figure(figsize=(12, 10))
-    ax_euc_kmeans = fig.add_subplot(2, 2, 1, projection="3d")
-    ax_euc_dbscan = fig.add_subplot(2, 2, 2, projection="3d")
-    ax_lift_kmeans = fig.add_subplot(2, 2, 3, projection="3d")
-    ax_lift_dbscan = fig.add_subplot(2, 2, 4, projection="3d")
+    # ------------------------------------------------------------------
+    # Euclidean baseline (build Laplacian once)
+    # ------------------------------------------------------------------
+    L_euc = pointcloud_laplacian(
+        points, k=k, h="local", normalized=normalized,
+    )
+    euc_km, euc_db, euc_hdb, evals_euc = _cluster_laplacian(L_euc, "Euclidean")
 
-    _plot_clusters(
-        ax_euc_kmeans,
-        points,
-        labels_euc_kmeans,
-        "Euclidean + KMeans",
-    )
-    _plot_clusters(
-        ax_euc_dbscan,
-        points,
-        labels_euc_dbscan,
-        f"Euclidean + DBSCAN (eps={dbscan_eps})",
-    )
-    _plot_clusters(
-        ax_lift_kmeans,
-        points,
-        labels_lift_kmeans,
-        "Lifted + KMeans",
-    )
-    _plot_clusters(
-        ax_lift_dbscan,
-        points,
-        labels_lift_dbscan,
-        f"Lifted + DBSCAN (eps={dbscan_eps})",
-    )
+    # ------------------------------------------------------------------
+    # Kernel Laplacian on iterated blow-up levels
+    # ------------------------------------------------------------------
+    # normals (N,3) -> tangent frames (N,3,2) via Grassmannian duality
+    tangent_frames = BlownUpSample.from_normals(points, normals).dualize().basis
+    level = BlowUpLevel.from_point_tangents(points, tangent_frames)
 
-    fig.suptitle(f"{cloud_label} Spectral Clustering: KMeans vs DBSCAN")
+    # level_results[lvl] = (labels_km, labels_db, labels_hdb, evals)
+    level_results: dict[
+        int, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    ] = {}
+
+    for lvl in range(1, num_levels + 1):
+        level = level.lift(k=k, alpha=alpha, lam=lam)
+        print(f"Level-{lvl}: embedded dim = {level.D}")
+
+        L, _, _ = lifted_laplacian(
+            level, kernel=kernel, k=k, h="local", normalized=normalized,
+        )
+        level_results[lvl] = _cluster_laplacian(L, f"Level-{lvl} {kernel}")
+
+    # ------------------------------------------------------------------
+    # Plot: rows = Euclidean + levels,  cols = KMeans | DBSCAN | HDBSCAN
+    # ------------------------------------------------------------------
+    n_rows = 1 + num_levels
+    n_cols = 3
+    fig = plt.figure(figsize=(6 * n_cols, 5 * n_rows))
+
+    def _add_row(row: int, labels_km, labels_db, labels_hdb, row_label: str):
+        base = row * n_cols
+        ax = fig.add_subplot(n_rows, n_cols, base + 1, projection="3d")
+        _plot_clusters(ax, points, labels_km, f"{row_label} + KMeans")
+        ax = fig.add_subplot(n_rows, n_cols, base + 2, projection="3d")
+        _plot_clusters(ax, points, labels_db,
+                       f"{row_label} + DBSCAN (eps={dbscan_eps})")
+        ax = fig.add_subplot(n_rows, n_cols, base + 3, projection="3d")
+        _plot_clusters(ax, points, labels_hdb,
+                       f"{row_label} + HDBSCAN (min={hdbscan_min_cluster_size})")
+
+    _add_row(0, euc_km, euc_db, euc_hdb, "Euclidean")
+    for lvl in range(1, num_levels + 1):
+        km, db, hdb, _ = level_results[lvl]
+        _add_row(lvl, km, db, hdb, f"Level-{lvl} {kernel}")
+
+    fig.suptitle(
+        f"{cloud_label} Spectral Clustering  "
+        f"(alpha={alpha}, k={k}, kernel={kernel})"
+    )
     plt.tight_layout()
     plt.show()
 
-    if evals_euc.size and evals_lift.size:
+    # ------------------------------------------------------------------
+    # Print eigenvalue spectra
+    # ------------------------------------------------------------------
+    print(
+        "First eigenvalues (Euclidean):",
+        np.array2string(evals_euc, precision=5, floatmode="fixed"),
+    )
+    for lvl in range(1, num_levels + 1):
+        _, _, _, evals_lvl = level_results[lvl]
         print(
-            "First eigenvalues (Euclidean):",
-            np.array2string(evals_euc, precision=5, floatmode="fixed"),
-        )
-        print(
-            "First eigenvalues (Lifted):",
-            np.array2string(evals_lift, precision=5, floatmode="fixed"),
+            f"First eigenvalues (Level-{lvl}):",
+            np.array2string(evals_lvl, precision=5, floatmode="fixed"),
         )
 
 
