@@ -7,7 +7,10 @@
       "Bash(python -c \"from umap import UMAP; print\\(''umap ok''\\)\")",
       "Bash(python -c \"import umap; import hdbscan; print\\(''ok''\\)\")",
       "Bash(python -c \"import umap; print\\(''umap ok''\\)\")",
-      "Bash(python -c \"import sklearn.cluster; print\\(dir\\(sklearn.cluster\\)\\)\")"
+      "Bash(python -c \"import sklearn.cluster; print\\(dir\\(sklearn.cluster\\)\\)\")",
+      "Bash(python -c \"from tangent_blowups.reconstruction.implicit.neural_poisson import NeuralPoissonReconstructor, PoissonConfig, ImplicitNet; print\\(''Import OK''\\)\")",
+      "Bash(python3:*)",
+      "Bash(python:*)"
     ]
   }
 }
