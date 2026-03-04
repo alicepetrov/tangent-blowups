@@ -124,10 +124,17 @@ class BlowUpLevel:
 
         N, n, d = frames.shape
 
-        # Orthonormalize each frame via reduced QR
+        # Orthonormalize each frame via reduced QR.
+        # Householder QR has a sign ambiguity: (Q, R) and (-Q, -R) are
+        # both valid.  We enforce det(R) > 0 so that Q preserves the
+        # orientation of the input frame.  Without this, random sign
+        # flips in the tangent frames create conflicting targets for any
+        # downstream loss that depends on frame orientation.
         orth = np.empty_like(frames)
         for i in range(N):
-            Q, _ = np.linalg.qr(frames[i])  # Q: (n, d) reduced
+            Q, R = np.linalg.qr(frames[i])  # Q: (n, d) reduced
+            if np.linalg.det(R[:d, :d]) < 0:
+                Q[:, 0] *= -1
             orth[i] = Q[:, :d]
 
         return cls(embedded=points, frame=orth, level=0)
@@ -316,8 +323,11 @@ class BlowUpLevel:
                 G[:D, a] = u_a
                 G[D:, a] = scale * Delta_P_a.ravel()
 
-            # Reduced QR: Q has shape (D_next, d) with orthonormal columns
-            Q, _ = np.linalg.qr(G)
+            # Reduced QR: Q has shape (D_next, d) with orthonormal columns.
+            # Enforce det(R) > 0 to avoid sign ambiguity (see from_point_tangents).
+            Q, R = np.linalg.qr(G)
+            if np.linalg.det(R[:d, :d]) < 0:
+                Q[:, 0] *= -1
             U_next[i] = Q[:, :d]
 
         result = BlowUpLevel(

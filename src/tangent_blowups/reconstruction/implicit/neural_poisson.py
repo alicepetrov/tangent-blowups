@@ -59,6 +59,7 @@ class PoissonConfig:
     lambda_align: float = 10.0
     lambda_screen: float = 10.0
     lambda_ortho: float = 5.0
+    lambda_smooth: float = 1.0
     off_manifold_std: float = 0.2
     off_manifold_refresh: int = 200
     batch_size: Optional[int] = None
@@ -271,6 +272,12 @@ def poisson_loss(
     4. **Orthonormality** (Sec 5.3):  G G^T ~ I on both on-manifold and
        off-manifold points.  The on-manifold term forces unit-norm
        gradients, preventing the trivial solution.
+
+    5. **Gradient-field smoothness** (Dirichlet energy):  penalises
+       spatial variation of the Jacobian via the finite-difference
+       approximation  ||J(x_i) - J(x_i + eps)||_F^2,  where the
+       perturbed points are the off-manifold samples already used
+       for the ortho term, so this adds no extra forward passes.
     """
     codim = J_on.shape[1]
     eye = torch.eye(codim, device=J_on.device).unsqueeze(0)
@@ -295,11 +302,18 @@ def poisson_loss(
         + torch.mean((gram_off - eye) ** 2)
     )
 
+    # 5. Gradient-field smoothness (Dirichlet energy)
+    # J_off is evaluated at pts_on + eps (the off-manifold samples).
+    # ||J(x) - J(x+eps)||_F^2 approximates ||nabla J||_F^2 * ||eps||^2,
+    # penalising rapid spatial variation of the gradient field.
+    loss_smooth = torch.mean((J_on - J_off) ** 2)
+
     total = (
         config.lambda_fit * loss_fit
         + config.lambda_align * loss_align
         + config.lambda_screen * loss_screen
         + config.lambda_ortho * loss_ortho
+        + config.lambda_smooth * loss_smooth
     )
 
     diagnostics = {
@@ -307,6 +321,7 @@ def poisson_loss(
         "align": loss_align.item(),
         "screen": loss_screen.item(),
         "ortho": loss_ortho.item(),
+        "smooth": loss_smooth.item(),
         "total": total.item(),
     }
     return total, diagnostics
@@ -445,7 +460,8 @@ class NeuralPoissonReconstructor:
                     f"fit={diag['fit']:.4f}  "
                     f"align={diag['align']:.4f}  "
                     f"screen={diag['screen']:.5f}  "
-                    f"ortho={diag['ortho']:.4f}"
+                    f"ortho={diag['ortho']:.4f}  "
+                    f"smooth={diag['smooth']:.4f}"
                 )
 
         self._training_losses = losses

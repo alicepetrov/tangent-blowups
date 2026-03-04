@@ -33,14 +33,13 @@ tangents = normalize_vectors(np.asarray(s.tangents, dtype=np.float64))
 # Optional: add noise
 rng = np.random.default_rng(42)
 points_noisy = points + rng.normal(scale=0.03, size=points.shape)
-tangents_noisy = normalize_vectors(tangents + rng.normal(scale=0.08, size=tangents.shape))
 
 print(f"Sampled {n_samples} points on a figure-8 in R^2")
 print(f"  points  : {points_noisy.shape}")
-print(f"  tangents: {tangents_noisy.shape}")
+print(f"  tangents: {tangents.shape}")
 
 # ── 2.  Lift to blow-up space ────────────────────────────────────────
-level0 = BlowUpLevel.from_point_tangents(points_noisy, tangents_noisy)
+level0 = BlowUpLevel.from_point_tangents(points_noisy, tangents)
 level1 = level0.lift(k=16, alpha=1.0)
 
 print(f"\nBlow-up level 1:")
@@ -50,14 +49,15 @@ print(f"  Codim         = {level1.D - level1.d}  (number of implicit functions)"
 
 # ── 3.  Train implicit network ───────────────────────────────────────
 config = PoissonConfig(
-    hidden_dim=256,
-    n_layers=4,
-    lr=1e-3,
-    n_epochs=2000,
+    hidden_dim=128,
+    n_layers=3,
+    lr=1e-4,
+    n_epochs=3000,
     lambda_fit=10.0,
     lambda_align=10.0,
     lambda_screen=10.0,
     lambda_ortho=5.0,
+    lambda_smooth=1.0,
     off_manifold_std=0.2,
     off_manifold_refresh=200,
     device="cuda" if torch.cuda.is_available() else "cpu",
@@ -90,7 +90,7 @@ ax.set_title("Input (noisy samples)")
 ax.scatter(points_noisy[:, 0], points_noisy[:, 1], s=4, c="steelblue", alpha=0.6)
 ax.quiver(
     points_noisy[::10, 0], points_noisy[::10, 1],
-    tangents_noisy[::10, 0], tangents_noisy[::10, 1],
+    tangents[::10, 0], tangents[::10, 1],
     scale=25, color="gray", alpha=0.4, width=0.003,
 )
 ax.set_aspect("equal")
