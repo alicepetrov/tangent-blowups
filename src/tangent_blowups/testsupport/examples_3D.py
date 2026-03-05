@@ -606,6 +606,122 @@ def plane_cross(scale: float = 1.0) -> ParametricSurface:
     return ParametricSurface(position=pos, tangent=tan, normal=norm)
 
 
+def cylinders_tangent(
+    radius: float = 1.0,
+    half_axis: float = 1.5,
+    half_angle: float = 0.5,
+) -> ParametricSurface:
+    """
+    Two cylinders of the same radius with perpendicular axes, tangentially
+    touching at the origin.
+
+    Cylinder 1: axis along the x-axis, lying below z = 0.
+        Parametrization: (a, r sin b, r(cos b - 1))
+        Tangent frame: e1 = (1,0,0), e2 = (0, cos b, -sin b)
+        Principal curvatures: kappa_1 = 0 (along e1), kappa_2 = 1/r (along e2)
+
+    Cylinder 2: axis along the y-axis, lying above z = 0.
+        Parametrization: (r sin b, a, r(1 - cos b))
+        Tangent frame: e1 = (cos b, 0, sin b), e2 = (0, 1, 0)
+        Principal curvatures: kappa_1 = 1/r (along e1), kappa_2 = 0 (along e2)
+
+    At the origin both surfaces share the same position, the same tangent
+    plane (z = 0), and the same scalar curvature invariants
+    H = 1/(2r),  K = 0 everywhere -- but their principal *directions* are
+    rotated 90 degrees:
+
+        B_1 = [[0,    0  ],    B_2 = [[1/r,  0],
+               [0,  1/r  ]]           [0,    0]]
+
+    Same eigenvalues, different eigenvectors.  No scalar function of
+    (kappa_1, kappa_2, H, K) can distinguish them.  The full shape-operator
+    matrix -- encoded in the level-1 Grassmannian tangent Q_i -- is required.
+
+    Domain: u in [0, 2), v in [0, 1].
+      face 0 (u in [0,1)): Cylinder 1.  local s -> axis a, v -> azimuthal b.
+      face 1 (u in [1,2)): Cylinder 2.  local s -> azimuthal b, v -> axis a.
+
+    Args:
+        radius:     cylinder radius r.
+        half_axis:  half-extent along each cylinder's own axis.
+        half_angle: half-extent of the azimuthal sampling window (radians).
+    """
+    r = float(radius)
+    L = float(half_axis)
+    A = float(half_angle)
+
+    def pos(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.clip(np.floor(u).astype(int), 0, 1)
+        s    = u - face
+
+        # axis parameter a ∈ (-L, L), azimuthal angle b ∈ (-A, A)
+        a = (s - 0.5) * 2.0 * L
+        b = (v - 0.5) * 2.0 * A
+
+        x = np.empty_like(a)
+        y = np.empty_like(a)
+        z = np.empty_like(a)
+
+        m0 = face == 0   # Cylinder 1: axis along x
+        x[m0] = a[m0]
+        y[m0] = r * np.sin(b[m0])
+        z[m0] = r * (np.cos(b[m0]) - 1.0)
+
+        m1 = face == 1   # Cylinder 2: axis along y
+        x[m1] = r * np.sin(b[m1])
+        y[m1] = a[m1]
+        z[m1] = r * (1.0 - np.cos(b[m1]))
+
+        return np.stack([x, y, z], axis=-1)
+
+    def tang(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.clip(np.floor(u).astype(int), 0, 1)
+        b    = (v - 0.5) * 2.0 * A
+
+        m0 = face == 0   # C1: e1 = (1,0,0),          e2 = (0, cos b, -sin b)
+        m1 = face == 1   # C2: e1 = (cos b, 0, sin b), e2 = (0, 1, 0)
+
+        e1 = np.stack([
+            np.where(m0, 1.0, np.where(m1, np.cos(b), 0.0)),
+            np.zeros_like(b),
+            np.where(m1, np.sin(b), 0.0),
+        ], axis=-1)  # (*shape, 3)
+
+        e2 = np.stack([
+            np.zeros_like(b),
+            np.where(m0, np.cos(b), np.where(m1, 1.0, 0.0)),
+            np.where(m0, -np.sin(b), 0.0),
+        ], axis=-1)  # (*shape, 3)
+
+        return np.stack([e1, e2], axis=-1)   # (*shape, 3, 2)
+
+    def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.clip(np.floor(u).astype(int), 0, 1)
+        b    = (v - 0.5) * 2.0 * A
+
+        nx = np.zeros_like(b)
+        ny = np.zeros_like(b)
+        nz = np.zeros_like(b)
+
+        m0 = face == 0   # C1: N = (0, sin b, cos b)
+        ny[m0] = np.sin(b[m0])
+        nz[m0] = np.cos(b[m0])
+
+        m1 = face == 1   # C2: N = (-sin b, 0, cos b)
+        nx[m1] = -np.sin(b[m1])
+        nz[m1] =  np.cos(b[m1])
+
+        return normalize_vectors(np.stack([nx, ny, nz], axis=-1))
+
+    return ParametricSurface(position=pos, tangent=tang, normal=norm)
+
+
 def plane_paraboloid_tangent(scale_xy: float = 1.0, scale_z: float = 0.25) -> ParametricSurface:
     """
     Plane and paraboloid tangent at the origin.
@@ -1034,6 +1150,7 @@ __all__ = [
     "klein_bottle",
     "cone",
     "plane_cross",
+    "cylinders_tangent",
     "plane_paraboloid_tangent",
     "tangent_spheres",
     "cube_surface",
