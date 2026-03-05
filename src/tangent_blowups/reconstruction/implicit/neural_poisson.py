@@ -86,7 +86,7 @@ class ImplicitNet(nn.Module):
         in_d = input_dim
         for _ in range(n_layers):
             layers.append(nn.Linear(in_d, hidden_dim))
-            layers.append(nn.Softplus(beta=10))
+            layers.append(nn.SiLU())
             in_d = hidden_dim
         layers.append(nn.Linear(hidden_dim, output_dim))
         self.net = nn.Sequential(*layers)
