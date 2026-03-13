@@ -419,11 +419,15 @@ def laplacian_spectrum(
     k_eff = min(k + (1 if drop_first else 0), n)
     use_sparse = sparse.issparse(L)
 
+    # For small matrices, dense eigh is faster and avoids ARPACK convergence issues
+    # (e.g. nearly singular Laplacians from tight product kernels).
+    DENSE_THRESHOLD = 2000
+
     if use_sparse:
         Ls = L.tocsr()
-        # ARPACK cannot compute k >= N - 1 eigenvalues. 
+        # ARPACK cannot compute k >= N - 1 eigenvalues.
         # Fallback to dense solver if requesting the full spectrum of a small graph.
-        if k_eff >= n - 1:
+        if n <= DENSE_THRESHOLD or k_eff >= n - 1:
             Ld = Ls.toarray()
             evals, evecs = np.linalg.eigh(Ld)
         else:
