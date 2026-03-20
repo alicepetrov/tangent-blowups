@@ -152,14 +152,17 @@ def extract_frenet_serret(
 
         dP   = P[neighbors] - P[i]   # (k_eff, 3, 3)
 
-        # Gaussian weights from level-1 distances
+        # Gaussian weights from level-1 distances (q-th neighbor bandwidth)
         d_l1  = level1.embedded[neighbors] - level1.embedded[i]
         dist2 = np.einsum("ki,ki->k", d_l1, d_l1)
-        bw    = dist2.max() if dist2.max() > 0.0 else 1.0
+        sorted_d2 = np.sort(dist2)
+        q_bw  = min(7, k_eff - 1)
+        bw    = sorted_d2[q_bw] if sorted_d2[q_bw] > 0 else 1.0
         w     = np.exp(-dist2 / bw)  # (k_eff,)
 
         ws    = w * s                 # (k_eff,)
-        denom = float(ws @ s) + lam
+        ws_s  = float(ws @ s)
+        denom = ws_s + lam * ws_s if ws_s > 0 else lam
         if abs(denom) < 1e-15:
             continue
 
@@ -188,11 +191,14 @@ def extract_frenet_serret(
 
         d_l1  = level1.embedded[neighbors] - level1.embedded[i]
         dist2 = np.einsum("ki,ki->k", d_l1, d_l1)
-        bw    = dist2.max() if dist2.max() > 0.0 else 1.0
+        sorted_d2 = np.sort(dist2)
+        q_bw  = min(7, k_eff - 1)
+        bw    = sorted_d2[q_bw] if sorted_d2[q_bw] > 0 else 1.0
         w     = np.exp(-dist2 / bw)
 
         ws    = w * s
-        denom = float(ws @ s) + lam
+        ws_s  = float(ws @ s)
+        denom = ws_s + lam * ws_s if ws_s > 0 else lam
         if abs(denom) < 1e-15:
             continue
         dkn_ds[i] = ws @ dkn / denom

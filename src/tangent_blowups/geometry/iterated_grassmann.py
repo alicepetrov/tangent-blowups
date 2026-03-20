@@ -201,7 +201,11 @@ class BlowUpLevel:
         wt = w[:, np.newaxis] * t                  # (k, d)
         TWT = wt.T @ t                             # (d, d)
         TWc = wt.T @ c_flat                        # (d, n_comp*d)
-        reg = TWT + lam * np.eye(d)
+        # Scale ridge relative to data so shrinkage is independent of
+        # bandwidth / effective sample size.
+        tr_TWT = np.trace(TWT)
+        ridge = lam * (tr_TWT / d) if tr_TWT > 0 else lam
+        reg = TWT + ridge * np.eye(d)
 
         try:
             B_flat_T = np.linalg.solve(reg, TWc)  # (d, n_comp*d)
@@ -279,10 +283,12 @@ class BlowUpLevel:
             Pi = P_all[i]               # (D, D)
             neighbors = nn_idx[i]       # (k_eff,)
 
-            # Gaussian weights with self-tuning bandwidth (= farthest neighbour dist)
+            # Gaussian weights with self-tuning bandwidth (q-th neighbor dist)
             d_phi = Phi_next[neighbors] - Phi_next[i]     # (k_eff, D_next)
             dist2 = np.einsum("ki,ki->k", d_phi, d_phi)   # (k_eff,)
-            bw = dist2.max() if dist2.max() > 0.0 else 1.0
+            sorted_d2 = np.sort(dist2)
+            q = min(7, k_eff - 1)
+            bw = sorted_d2[q] if sorted_d2[q] > 0 else 1.0
             w = np.exp(-dist2 / bw)                        # (k_eff,)
 
             # Intrinsic coords: t_ij = U_i^T (Phi_j^{ell-1} - Phi_i^{ell-1})
@@ -542,17 +548,22 @@ def extract_level2(
         d_emb = level0.embedded[neighbors] - level0.embedded[i]   # (k_eff, n)
         t = d_emb @ Ui                                              # (k_eff, d)
 
-        # Gaussian weights from level-1 distances, consistent with lift()
+        # Gaussian weights from level-1 distances (q-th neighbor bandwidth)
         d_l1 = level1.embedded[neighbors] - level1.embedded[i]    # (k_eff, D1)
         dist2 = np.einsum("ki,ki->k", d_l1, d_l1)
-        bw = dist2.max() if dist2.max() > 0.0 else 1.0
+        sorted_d2 = np.sort(dist2)
+        q_bw = min(7, k_eff - 1)
+        bw = sorted_d2[q_bw] if sorted_d2[q_bw] > 0 else 1.0
         w = np.exp(-dist2 / bw)                     # (k_eff,)
 
         dh = h_all[neighbors] - h_all[i]            # (k_eff, n_comp, d, d)
         dh_flat = dh.reshape(k_eff, n_comp * d * d)
 
         wt = w[:, np.newaxis] * t                   # (k_eff, d)
-        TWT = wt.T @ t + lam * np.eye(d)            # (d, d)
+        TWT_raw = wt.T @ t                           # (d, d)
+        tr_TWT = np.trace(TWT_raw)
+        ridge = lam * (tr_TWT / d) if tr_TWT > 0 else lam
+        TWT = TWT_raw + ridge * np.eye(d)            # (d, d)
         TWdh = wt.T @ dh_flat                        # (d, n_comp*d^2)
 
         try:

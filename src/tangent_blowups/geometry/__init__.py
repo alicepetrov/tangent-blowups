@@ -4,6 +4,8 @@ from .kernels import (
     product_affinity,
     affinity_to_laplacian,
     lifted_laplacian,
+    lifted_gradient,
+    lifted_divergence,
 )
 from .frenet_serret import (
     FrenetSerretInvariants,
@@ -16,6 +18,8 @@ __all__ = [
     "product_affinity",
     "affinity_to_laplacian",
     "lifted_laplacian",
+    "lifted_gradient",
+    "lifted_divergence",
     "FrenetSerretInvariants",
     "extract_frenet_serret",
 ]

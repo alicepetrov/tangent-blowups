@@ -456,6 +456,185 @@ def lifted_laplacian(
     return affinity_to_laplacian(W, normalized=normalized, eps=eps)
 
 
+# ---------------------------------------------------------------------------
+# Discrete gradient and divergence
+# ---------------------------------------------------------------------------
+
+def lifted_gradient(
+    level: BlowUpLevel,
+    f: np.ndarray,
+    W: sparse.csr_matrix,
+    *,
+    lam: float = 1e-3,
+) -> np.ndarray:
+    """
+    Discrete gradient of a scalar field on a BlowUpLevel.
+
+    Given a function *f* sampled at the lifted points, computes the
+    tangent-plane gradient at each vertex via weighted least-squares
+    regression of neighbour value differences against projected
+    displacements.
+
+    Algorithm at each vertex *i*:
+
+    1. Project neighbour displacements into the tangent plane:
+       ``delta_ij = U_i^T (Phi_j - Phi_i)``  in ``R^d``.
+    2. Solve the weighted normal equations:
+       ``g_i = S_i^{-1} r_i`` where
+       ``S_i = sum_j w_ij delta_ij delta_ij^T`` and
+       ``r_i = sum_j w_ij delta_ij (f_j - f_i)``.
+    3. Lift back to the ambient space:
+       ``(grad f)_i = U_i g_i``  in ``R^D``.
+
+    The matrix ``S_i`` is the kernel-weighted covariance of the projected
+    displacements; as N -> inf it converges to a scalar multiple of the
+    metric tensor, so ``S_i^{-1}`` performs the discrete analogue of
+    raising the index with ``G^{-1}``.
+
+    Args:
+        level:  BlowUpLevel at any level.
+        f:      Scalar field, shape ``(N,)``.
+        W:      Sparse (N, N) symmetric affinity matrix (e.g. from
+                :func:`lifted_affinity`).  Only the sparsity pattern and
+                values are used as regression weights.
+        lam:    Tikhonov regularisation added to ``S_i`` as
+                ``lam * tr(S_i)/d * I``.
+
+    Returns:
+        ``(N, D)`` array of ambient-space gradient vectors lying in
+        ``col(U_i)`` at each point.
+    """
+    N, D, d = level.N, level.D, level.d
+    f = np.asarray(f, dtype=float).ravel()
+    if f.shape[0] != N:
+        raise ValueError(f"f has length {f.shape[0]}, expected {N}.")
+
+    Phi = level.embedded    # (N, D)
+    U   = level.frame       # (N, D, d)
+    grad_ambient = np.zeros((N, D), dtype=float)
+
+    W_csr = W.tocsr()
+    for i in range(N):
+        js = W_csr[i].indices
+        ws = np.asarray(W_csr[i].data, dtype=float)
+        if js.size == 0:
+            continue
+
+        # Projected displacements in tangent plane
+        d_phi = Phi[js] - Phi[i]           # (k, D)
+        delta = d_phi @ U[i]               # (k, d)
+
+        # Value differences
+        df = f[js] - f[i]                  # (k,)
+
+        # Weighted normal equations: S g = r
+        w_delta = ws[:, np.newaxis] * delta  # (k, d)
+        S = w_delta.T @ delta               # (d, d)
+        r = w_delta.T @ df                  # (d,)
+
+        # Relative ridge regularisation
+        tr_S = np.trace(S)
+        ridge = lam * (tr_S / d) if tr_S > 0 else lam
+        S += ridge * np.eye(d)
+
+        try:
+            g_tan = np.linalg.solve(S, r)  # (d,)
+        except np.linalg.LinAlgError:
+            continue
+
+        grad_ambient[i] = U[i] @ g_tan     # (D,)
+
+    return grad_ambient
+
+
+def lifted_divergence(
+    level: BlowUpLevel,
+    X: np.ndarray,
+    W: sparse.csr_matrix,
+    *,
+    lam: float = 1e-3,
+) -> np.ndarray:
+    """
+    Discrete divergence of a tangent vector field on a BlowUpLevel.
+
+    Given a vector field ``X_i in col(U_i)`` (i.e. tangent to the lifted
+    manifold at each point), estimate the tangent-plane Jacobian by
+    regressing neighbour differences of the tangent-plane coordinates
+    against projected displacements, and take the trace.
+
+    Algorithm at each vertex *i*:
+
+    1. Express ``X_i`` in tangent-plane coordinates:
+       ``X_bar_i = U_i^T X_i``  in ``R^d``.
+    2. For each tangent component *a*, regress
+       ``X_bar_j^a - X_bar_i^a`` against ``delta_ij``:
+       ``J_i^a = S_i^{-1} R_i^a``
+       where ``R_i^a = sum_j w_ij delta_ij (X_bar_j^a - X_bar_i^a)``.
+    3. Take the trace:
+       ``(div X)_i = sum_a J_i^{a,a} = tr(S_i^{-1} R_i)``.
+
+    Args:
+        level:  BlowUpLevel at any level.
+        X:      Vector field, shape ``(N, D)``.  Each ``X[i]`` should lie
+                in ``col(U_i)``.
+        W:      Sparse (N, N) symmetric affinity matrix.
+        lam:    Tikhonov regularisation (relative scaling).
+
+    Returns:
+        ``(N,)`` array of divergence values.
+    """
+    N, D, d = level.N, level.D, level.d
+    X = np.asarray(X, dtype=float)
+    if X.shape != (N, D):
+        raise ValueError(f"X has shape {X.shape}, expected ({N}, {D}).")
+
+    Phi = level.embedded    # (N, D)
+    U   = level.frame       # (N, D, d)
+
+    div = np.zeros(N, dtype=float)
+
+    W_csr = W.tocsr()
+    for i in range(N):
+        js = W_csr[i].indices
+        ws = np.asarray(W_csr[i].data, dtype=float)
+        if js.size == 0:
+            continue
+
+        Ui = U[i]                              # (D, d)
+
+        # Projected displacements in tangent plane of point i
+        d_phi = Phi[js] - Phi[i]               # (k, D)
+        delta = d_phi @ Ui                     # (k, d)
+
+        # Weighted covariance
+        w_delta = ws[:, np.newaxis] * delta    # (k, d)
+        S = w_delta.T @ delta                  # (d, d)
+
+        # Relative ridge regularisation
+        tr_S = np.trace(S)
+        ridge = lam * (tr_S / d) if tr_S > 0 else lam
+        S += ridge * np.eye(d)
+
+        # Project ALL vectors into point i's tangent frame so that
+        # the difference is computed in a single coordinate system.
+        Xi_bar = Ui.T @ X[i]                   # (d,)
+        Xj_bar = X[js] @ Ui                    # (k, d)  = U_i^T X_j for each j
+        dX = Xj_bar - Xi_bar                   # (k, d)
+
+        # R[b, a] = sum_j w_j delta_j^b dX_j^a
+        R = w_delta.T @ dX                    # (d, d)
+
+        # J = S^{-1} R;  div = tr(J)
+        try:
+            J = np.linalg.solve(S, R)          # (d, d)
+        except np.linalg.LinAlgError:
+            continue
+
+        div[i] = np.trace(J)
+
+    return div
+
+
 __all__ = [
     # Affinity builders
     "lifted_affinity",
@@ -464,4 +643,7 @@ __all__ = [
     # Laplacian
     "affinity_to_laplacian",
     "lifted_laplacian",
+    # Gradient / Divergence
+    "lifted_gradient",
+    "lifted_divergence",
 ]
