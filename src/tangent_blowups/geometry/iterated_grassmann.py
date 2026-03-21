@@ -23,7 +23,10 @@ Each lift step:
      component.
 
 The ell-th blow-up metric telescopes as:
-  d_ell^2 = ||x_i - x_j||^2 + sum_{m=0}^{ell} (alpha/2) ||P_i^(m) - P_j^(m)||_F^2
+  d_ell^2 = ||x_i - x_j||^2 + sum_{m=0}^{ell-1} (alpha_m/2) ||P_i^(m) - P_j^(m)||_F^2
+
+(The level-ell embedding includes projectors from levels 0 through ell-1;
+the level-ell projectors are appended only by the next lift.)
 
 Reference: theoretical notes on iterated tangent blow-ups / Nash blow-ups.
 """
@@ -98,6 +101,11 @@ class BlowUpLevel:
         # Defaults to D at level 0 (where embedded == points, so D == n).
         self.n_orig: int = int(n_orig) if n_orig is not None else self.D
         self.curvature_ops: np.ndarray | None = None  # (N, n_comp, d, d); set by lift()
+        # Layout of vectorised projector blocks within self.embedded.
+        # Each entry is (start_col, n_cols, scale) where
+        #   embedded[:, start:start+n_cols] = scale * vec(P^(m))
+        # At level 0 this is empty; lift() appends one entry per lift step.
+        self._proj_blocks: list[tuple[int, int, float]] = []
 
     # ------------------------------------------------------------------
     # Factory
@@ -340,7 +348,57 @@ class BlowUpLevel:
             embedded=Phi_next, frame=U_next, level=self.level + 1, n_orig=self.n_orig,
         )
         result.curvature_ops = B_all
+        # Track where each level's vectorised projectors sit in the embedding.
+        result._proj_blocks = list(self._proj_blocks) + [
+            (D, D * D, scale)  # block for P^(self.level): starts at col D, has D^2 cols
+        ]
         return result
+
+    # ------------------------------------------------------------------
+    # Automatic parameter selection
+    # ------------------------------------------------------------------
+
+    def auto_alpha(self, *, k: int = 30) -> float:
+        """
+        Compute a data-driven weight parameter alpha for the lift.
+
+        Sets alpha = median_spatial^2 / median_projector^2, balancing the
+        spatial and angular scales so that neither dominates the lifted
+        metric.  This is the default alpha recommended in the paper
+        (Section 7, Implementation).
+
+        Args:
+            k:  k-NN neighbourhood size used to sample pairwise distances.
+
+        Returns:
+            alpha > 0.
+        """
+        k_eff = min(k, self.N - 1)
+        tree = cKDTree(self.embedded)
+        dist, idx = tree.query(self.embedded, k=k_eff + 1)
+        idx = idx[:, 1:]   # exclude self
+        dist = dist[:, 1:]
+
+        # Spatial distances: use original positions
+        positions = self.embedded[:, :self.n_orig]
+        rows = np.repeat(np.arange(self.N), k_eff)
+        cols = idx.ravel()
+        dx = positions[rows] - positions[cols]
+        dist2_spatial = np.einsum("ij,ij->i", dx, dx)
+
+        # Projector distances: ||P_i - P_j||_F^2 = 2d - 2||U_i^T U_j||_F^2
+        U = self.frame                                        # (N, D, d)
+        M = np.einsum("eka,ekb->eab", U[rows], U[cols])      # (E, d, d)
+        inner_sq = np.einsum("eab,eab->e", M, M)
+        dist2_proj = 2.0 * self.d - 2.0 * inner_sq
+        dist2_proj = np.maximum(dist2_proj, 0.0)              # numerical safety
+
+        med_spatial = float(np.median(np.sqrt(dist2_spatial)))
+        med_proj = float(np.median(np.sqrt(dist2_proj)))
+
+        if med_proj <= 0.0:
+            return 1.0
+        return (med_spatial / med_proj) ** 2
 
     # ------------------------------------------------------------------
     # Utilities

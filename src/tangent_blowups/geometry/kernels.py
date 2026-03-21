@@ -9,11 +9,13 @@ construction.  Three families are provided, all operating on BlowUpLevel data:
    where d_M^2 = ||Phi_i - Phi_j||^2 is the squared Chordal-Sasaki distance
    already encoded in BlowUpLevel.embedded.
 
-2. **Product kernel** (independent spatial and angular bandwidths):
-       K((p, U), (q, V)) = exp(-||x_i - x_j||^2 / sigma_x^2)
-                         * exp(-||P_i - P_j||_F^2 / sigma_u^2)
-   where x_i = level.embedded and P_i = level.projectors are the CURRENT
-   level's embedded positions and tangent projectors respectively.
+2. **Product kernel** (multi-scale, independent spatial and angular bandwidths):
+       K = exp(-||x_i - x_j||^2 / sigma_x^2)
+         * prod_{m=0}^{ell} exp(-||P_i^(m) - P_j^(m)||_F^2 / sigma_m^2)
+   where x_i are the original spatial positions and P_i^(m) is the
+   tangent projector at level m.  At level 0 this reduces to a two-factor
+   kernel.  At higher levels, one angular factor per blow-up level is
+   included, each with an independent bandwidth sigma_m.
 
 3. **Self-tuning affinity** (Zelnik-Manor & Perona 2004):
        W_ij = exp(-d_M^2 / (h_i * h_j))
@@ -186,7 +188,7 @@ def _assemble_affinity(
 def lifted_affinity(
     level: BlowUpLevel,
     *,
-    k: int = 16,
+    k: int = 30,
     h: float | Literal["local"] | None = "local",
     symmetrize: bool = True,
 ) -> sparse.csr_matrix:
@@ -235,7 +237,7 @@ def lifted_gaussian_affinity(
     level: BlowUpLevel,
     sigma: float,
     *,
-    k: int = 16,
+    k: int = 30,
     symmetrize: bool = True,
 ) -> sparse.csr_matrix:
     """
@@ -272,45 +274,43 @@ def lifted_gaussian_affinity(
 def product_affinity(
     level: BlowUpLevel,
     sigma_x: float,
-    sigma_u: float,
+    sigma_u: float | list[float] | np.ndarray,
     *,
-    k: int = 16,
+    k: int = 30,
     symmetrize: bool = True,
 ) -> sparse.csr_matrix:
     """
-    Product-kernel affinity with independent spatial and angular bandwidths:
+    Multi-scale product-kernel affinity with independent spatial and angular
+    bandwidths:
 
-        W_ij = exp(-||x_i - x_j||^2      / sigma_x^2)
-             * exp(-||P_i - P_j||_F^2    / sigma_u^2)
+        W_ij = exp(-||x_i - x_j||^2 / sigma_x^2)
+             * prod_{m=0}^{ell} exp(-||P_i^(m) - P_j^(m)||_F^2 / sigma_m^2)
 
     where:
       - ``x_i = level.embedded[i, :level.n_orig]``  -- original spatial position
-        (the first n_orig coordinates of the Chordal-Sasaki embedding, which are
-        always the unmodified spatial coordinates)
-      - ``P_i = level.projectors[i]``   -- tangent projector at the current
-        level (encoding the NEXT order of geometry: curvature at level 0,
-        curvature-of-curvature at level 1, etc.)
+      - ``P_i^(m)`` is the tangent projector at level *m* (levels 0 through
+        ell-1 are extracted from the embedding, level ell from
+        ``level.projectors``)
+      - ``sigma_m`` is the bandwidth for the *m*-th angular factor
+
+    At level 0 this reduces to the two-factor kernel (spatial x angular).
+    At higher levels it includes one angular factor per blow-up level,
+    matching the multi-scale product kernel from the paper (Section 5.1).
 
     The k-NN graph is built in the full ``level.embedded`` (Chordal-Sasaki
     metric) so that cross-component neighbours are naturally suppressed near
-    tangential intersection points, but the spatial factor uses only the
-    original position coordinates to keep the two bandwidths truly independent.
+    tangential intersection points.
 
-    The underlying kernel is positive definite: each factor is a Gaussian RBF
-    on a Euclidean space (Bochner's theorem), and the Schur product theorem
-    gives PD for their pointwise product.  As with all kernels here, the
-    sparse k-NN approximation is not generally PSD; L = D - W is PSD.
+    The underlying kernel is positive definite (Schur product theorem).
+    The sparse k-NN approximation is not generally PSD; L = D - W is PSD.
 
     Args:
-        level:      BlowUpLevel at any level.  Typical usage:
-
-                    - ``level0`` -> sigma_x controls spatial scale,
-                      sigma_u controls tangent-plane scale.
-                    - ``level1`` -> sigma_x controls Chordal-Sasaki scale,
-                      sigma_u controls curvature-direction scale.
-
+        level:      BlowUpLevel at any level.
         sigma_x:    Bandwidth for the original spatial positions (> 0).
-        sigma_u:    Bandwidth for the tangent projector (Frobenius) part (> 0).
+        sigma_u:    Angular bandwidth(s).  A single float applies the same
+                    bandwidth to all projector levels.  A list/array of length
+                    ``level.level + 1`` assigns an independent bandwidth per
+                    level.
         k:          k-NN neighbourhood size.
         symmetrize: Make W symmetric.
 
@@ -319,8 +319,23 @@ def product_affinity(
     """
     if sigma_x <= 0.0:
         raise ValueError(f"sigma_x must be positive, got {sigma_x}.")
-    if sigma_u <= 0.0:
-        raise ValueError(f"sigma_u must be positive, got {sigma_u}.")
+
+    n_angular = level.level + 1   # number of angular factors (levels 0..ell)
+    if isinstance(sigma_u, (int, float)):
+        sigma_u_val = float(sigma_u)
+        if sigma_u_val <= 0.0:
+            raise ValueError(f"sigma_u must be positive, got {sigma_u_val}.")
+        sigmas = [sigma_u_val] * n_angular
+    else:
+        sigmas = [float(s) for s in sigma_u]
+        if len(sigmas) != n_angular:
+            raise ValueError(
+                f"sigma_u sequence has length {len(sigmas)}, expected "
+                f"{n_angular} (one per projector level 0..{level.level})."
+            )
+        if any(s <= 0.0 for s in sigmas):
+            raise ValueError("All sigma_u entries must be positive.")
+
     N = level.N
     if N == 0:
         return sparse.csr_matrix((0, 0), dtype=float)
@@ -328,30 +343,31 @@ def product_affinity(
     # k-NN in the Chordal-Sasaki embedded space
     rows, cols, dist2_embed = _knn_edges(level.embedded, k)
 
-    # Spatial factor: ||x_i - x_j||^2 in the ORIGINAL ambient space only.
-    # level.embedded = (x, sqrt(alpha/2)*vec(P), ...) so the first n_orig coords
-    # are always the original spatial positions.  Using dist2_embed would
-    # double-count the projector distance already captured by the angular factor.
+    # --- Spatial factor: ||x_i - x_j||^2 in the ORIGINAL ambient space ---
     positions = level.embedded[:, :level.n_orig]
     dx = positions[rows] - positions[cols]
     dist2_spatial = np.einsum("ij,ij->i", dx, dx)
-    kx = np.exp(-dist2_spatial / (sigma_x * sigma_x))
+    weights = np.exp(-dist2_spatial / (sigma_x * sigma_x))
 
-    # Angular factor: ||P_i - P_j||_F^2 via the chordal identity
-    #
-    #   ||P_i - P_j||_F^2 = 2d - 2 ||U_i^T U_j||_F^2
-    #
-    # where U_i = level.frame[i] has shape (D, d).  This avoids materialising
-    # the (N, D, D) projector matrices and the (E, D, D) edge-difference tensors.
-    # Cost:  O(E * D * d)  vs  O(E * D^2)  — for D=12, d=2: 6x cheaper;
-    # memory: O(E * d^2)  vs  O(E * D^2)  — 36x smaller intermediates.
+    # --- Angular factors for levels 0..ell-1 (from embedded blocks) ---
+    for m, (start, ncols, scale) in enumerate(level._proj_blocks):
+        block_diff = (level.embedded[rows, start:start + ncols]
+                      - level.embedded[cols, start:start + ncols])
+        # block_diff = scale * (vec(P_i^(m)) - vec(P_j^(m)))
+        # so ||block_diff||^2 = scale^2 * ||P^(m)_i - P^(m)_j||_F^2
+        scaled_dist2 = np.einsum("ij,ij->i", block_diff, block_diff)
+        # exp(-||P||_F^2 / sigma_m^2) = exp(-scaled_dist2 / (scale^2 * sigma_m^2))
+        denom = scale * scale * sigmas[m] * sigmas[m]
+        weights *= np.exp(-scaled_dist2 / denom)
+
+    # --- Angular factor for current level ell (from live projectors) ---
+    # Use chordal identity: ||P_i - P_j||_F^2 = 2d - 2||U_i^T U_j||_F^2
     U = level.frame                                    # (N, D, d)
     M = np.einsum("eka,ekb->eab", U[rows], U[cols])   # (E, d, d): U_i^T U_j
     inner_sq = np.einsum("eab,eab->e", M, M)          # ||U_i^T U_j||_F^2
     proj_dist2 = 2.0 * level.d - 2.0 * inner_sq
-    ku = np.exp(-proj_dist2 / (sigma_u * sigma_u))
+    weights *= np.exp(-proj_dist2 / (sigmas[-1] * sigmas[-1]))
 
-    weights = kx * ku
     return _assemble_affinity(N, rows, cols, weights, symmetrize=symmetrize)
 
 
@@ -408,11 +424,11 @@ def lifted_laplacian(
     level: BlowUpLevel,
     *,
     kernel: Literal["self_tuning", "gaussian", "product"] = "self_tuning",
-    k: int = 16,
+    k: int = 30,
     h: float | Literal["local"] | None = "local",
     sigma: float | None = None,
     sigma_x: float | None = None,
-    sigma_u: float | None = None,
+    sigma_u: float | list[float] | None = None,
     normalized: bool = False,
     symmetrize: bool = True,
     eps: float = 1e-12,
@@ -430,7 +446,9 @@ def lifted_laplacian(
         h:          Bandwidth for "self_tuning" kernel.
         sigma:      Bandwidth for "gaussian" kernel.
         sigma_x:    Spatial bandwidth for "product" kernel.
-        sigma_u:    Angular bandwidth for "product" kernel.
+        sigma_u:    Angular bandwidth(s) for "product" kernel.  A single
+                    float applies the same bandwidth to all projector levels;
+                    a list assigns independent bandwidths per level.
         normalized: Symmetric normalized Laplacian if True.
         symmetrize: Symmetrize the affinity matrix.
         eps:        Degree threshold for normalized Laplacian.
