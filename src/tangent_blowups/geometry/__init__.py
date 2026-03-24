@@ -6,6 +6,7 @@ from .kernels import (
     lifted_laplacian,
     lifted_gradient,
     lifted_divergence,
+    div_grad_operator,
 )
 from .frenet_serret import (
     FrenetSerretInvariants,
@@ -20,6 +21,7 @@ __all__ = [
     "lifted_laplacian",
     "lifted_gradient",
     "lifted_divergence",
+    "div_grad_operator",
     "FrenetSerretInvariants",
     "extract_frenet_serret",
 ]

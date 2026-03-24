@@ -2,17 +2,24 @@
 Lifted Heat Method
 ------------------
 Approximate geodesic distances on a lifted point cloud using the heat method
-(Crane et al. 2013), with the Laplacian, gradient, and divergence operators
-defined in the tangent blow-up's lifted space.
+(Crane et al. 2013), with the graph Laplacian built on the lifted space
+and the tangent-plane gradient from ``geometry.kernels``.
 
 Algorithm:
-1) Heat diffusion:   (I + t L) u = delta
-2) Gradient flow:    X = -grad(u) / ||grad(u)||
-3) Poisson solve:    L phi = -div(X)
 
-All three operators (L, grad, div) are computed on the lifted point cloud via
-the discrete operators defined in ``geometry.kernels``, ensuring consistency
-with the paper (Sections 5.1--5.2).
+1) Heat diffusion:   (I + t L) u = M^{-1} delta
+2) Gradient flow:    X = -grad(u) / ||grad(u)||
+3) Poisson solve:    L phi = -div_edge(X)
+
+The graph Laplacian ``L = D - W`` is used for both the heat and Poisson
+steps (symmetric PSD, correct null space).  The tangent-plane gradient
+(``lifted_gradient``) gives ambient-space gradient vectors at each vertex.
+The Poisson RHS uses an **edge-compatible divergence**: the normalised
+gradient is projected onto each k-NN edge and summed with affinity
+weights, so that the divergence lies in the range of L.
+
+A lumped mass matrix ``M`` (estimated from k-NN Voronoi volumes) scales
+the initial impulse to account for non-uniform point density.
 """
 from __future__ import annotations
 
@@ -28,10 +35,42 @@ from ..geometry.kernels import (
     affinity_to_laplacian,
     lifted_gradient,
     lifted_divergence,
+    _precompute_edges,
 )
 
 # Keep old import available for backward-compatible input coercion
 from ..geometry.grassmann import BlownUpSample
+
+
+def _normals_to_tangent_frames(normals: np.ndarray) -> np.ndarray:
+    """Build an orthonormal 2-frame from unit normals via Gram-Schmidt.
+
+    Args:
+        normals: (N, 3) unit surface normals.
+
+    Returns:
+        (N, 3, 2) orthonormal tangent frames.
+    """
+    N = normals.shape[0]
+    frames = np.zeros((N, 3, 2), dtype=float)
+    for i in range(N):
+        n = normals[i]
+        ax = int(np.argmin(np.abs(n)))
+        seed = np.zeros(3)
+        seed[ax] = 1.0
+        t1 = np.cross(n, seed)
+        norm1 = np.linalg.norm(t1)
+        if norm1 < 1e-12:
+            seed = np.zeros(3)
+            seed[(ax + 1) % 3] = 1.0
+            t1 = np.cross(n, seed)
+            norm1 = np.linalg.norm(t1)
+        t1 /= norm1
+        t2 = np.cross(n, t1)
+        t2 /= np.linalg.norm(t2)
+        frames[i, :, 0] = t1
+        frames[i, :, 1] = t2
+    return frames
 
 
 def _resolve_source_indices(
@@ -53,7 +92,12 @@ def _estimate_time_step(
     W: sparse.spmatrix,
     t_scale: float,
 ) -> float:
-    """Estimate the diffusion time step from median edge distance."""
+    """Estimate the diffusion time step from mean edge distance.
+
+    Uses ``mean(edge_length)^2`` (matching geometry-central) rather than
+    median, computed in the **original spatial coordinates** so that
+    geodesic distances remain in spatial units.
+    """
     coo = W.tocoo()
     mask = coo.row != coo.col
     rows = coo.row[mask]
@@ -61,15 +105,113 @@ def _estimate_time_step(
     if rows.size == 0:
         return float(t_scale)
 
-    # Use original spatial positions for the time scale so that
-    # geodesic distances remain in spatial units.
     positions = level.embedded[:, :level.n_orig]
     d = positions[rows] - positions[cols]
     dist = np.linalg.norm(d, axis=1)
     dist = dist[dist > 0.0]
     if dist.size == 0:
         return float(t_scale)
-    return float(t_scale) * float(np.median(dist) ** 2)
+    return float(t_scale) * float(np.mean(dist) ** 2)
+
+
+def _estimate_mass_matrix(
+    level: BlowUpLevel,
+    W: sparse.spmatrix,
+) -> np.ndarray:
+    """Estimate a diagonal lumped mass matrix from k-NN distances.
+
+    For a *d*-dimensional manifold sampled with *N* points, the Voronoi
+    volume at point *i* is approximated by
+
+        M_ii = V_d * r_k^d / k
+
+    where *r_k* is the distance to the k-th nearest neighbour (the
+    farthest edge in the k-NN graph), *V_d* is the volume of the
+    *d*-dimensional unit ball, and *k* is the neighbourhood size.
+
+    Returns:
+        (N,) diagonal mass entries.
+    """
+    N = level.N
+    d = level.d  # manifold dimension
+    positions = level.embedded[:, :level.n_orig]
+
+    coo = W.tocoo()
+    mask = coo.row != coo.col
+    rows, cols = coo.row[mask], coo.col[mask]
+
+    if rows.size == 0:
+        return np.ones(N, dtype=float)
+
+    dx = positions[rows] - positions[cols]
+    dist = np.linalg.norm(dx, axis=1)
+
+    # r_k(i) = max distance to any neighbour of i in the k-NN graph
+    r_k = np.zeros(N, dtype=float)
+    np.maximum.at(r_k, rows, dist)
+
+    # Count neighbours per vertex (= k for interior points)
+    k_per_vertex = np.bincount(rows, minlength=N).astype(float)
+    k_per_vertex = np.clip(k_per_vertex, 1.0, None)
+
+    # Volume of d-dimensional unit ball
+    from math import gamma as math_gamma
+    V_d = np.pi ** (d / 2.0) / math_gamma(d / 2.0 + 1.0)
+
+    mass = V_d * (r_k ** d) / k_per_vertex
+
+    # Safety: replace zeros with global median
+    zero = mass <= 0.0
+    if zero.any():
+        pos = mass[~zero]
+        fallback = float(np.median(pos)) if pos.size > 0 else 1.0
+        mass[zero] = fallback
+
+    return mass
+
+
+def _edge_divergence(
+    level: BlowUpLevel,
+    X: np.ndarray,
+    W: sparse.spmatrix,
+) -> np.ndarray:
+    """Edge-compatible divergence of a vertex vector field.
+
+    For each edge (i, j) in the k-NN graph, the normalised gradient
+    field ``X`` is averaged at the two endpoints and projected onto the
+    **spatial** edge direction ``x_j - x_i``.  The weighted sum gives a
+    divergence that is compatible with the graph Laplacian ``L = D - W``
+    (i.e. the result lies in the range of L).
+
+    Args:
+        level:  BlowUpLevel (any level).
+        X:      (N, D) normalised gradient field (unit vectors).
+        W:      Sparse affinity matrix.
+
+    Returns:
+        (N,) divergence values.
+    """
+    N = level.N
+    positions = level.embedded[:, :level.n_orig]
+
+    coo = W.tocoo()
+    rows, cols = coo.row, coo.col
+    ws = np.asarray(coo.data, dtype=float)
+
+    # Spatial edge vectors
+    edge_vec = positions[cols] - positions[rows]  # (E, n_orig)
+
+    # Average gradient at both endpoints, project onto spatial edge
+    # Only use the first n_orig components of X (spatial part).
+    X_spatial = X[:, :level.n_orig]
+    X_avg = 0.5 * (X_spatial[rows] + X_spatial[cols])  # (E, n_orig)
+    X_edge = np.einsum("ij,ij->i", X_avg, edge_vec)    # (E,)
+
+    # Graph divergence: div_i = sum_j w_ij X_ij
+    div = np.zeros(N, dtype=float)
+    np.add.at(div, rows, ws * X_edge)
+
+    return div
 
 
 def _apply_dirichlet_constraint(
@@ -102,6 +244,11 @@ def _coerce_to_level(
     - BlowUpLevel: returned as-is (already lifted if the caller chose to).
     - BlownUpSample / raw arrays: converted to level-0 BlowUpLevel, then
       optionally lifted to level 1 when alpha > 0.
+
+    When ``subspace_basis`` is a 2-D array of shape ``(N, 3)`` in 3-D ambient
+    space, it is interpreted as **surface normals** and converted to orthonormal
+    tangent 2-frames.  In all other cases a ``(N, n)`` array is treated as a
+    single tangent vector (d=1, curves).
     """
     if isinstance(input_data, BlowUpLevel):
         return input_data
@@ -118,7 +265,11 @@ def _coerce_to_level(
         spatial = np.asarray(input_data, dtype=float)
         basis = np.asarray(subspace_basis, dtype=float)
         if basis.ndim == 2:
-            basis = basis[:, :, np.newaxis]
+            # (N, 3) in 3-D ambient space -> surface normals -> tangent 2-frames
+            if spatial.shape[1] == 3:
+                basis = _normals_to_tangent_frames(basis)
+            else:
+                basis = basis[:, :, np.newaxis]
 
     level = BlowUpLevel.from_point_tangents(spatial, basis)
 
@@ -157,8 +308,14 @@ def lifted_heat_method(
     Approximate geodesic distances via the heat method on a lifted point cloud.
 
     Implements the three-step heat method of Crane et al. (2013) using the
-    discrete Laplacian, gradient, and divergence from the tangent blow-up
-    framework (paper Sections 5.1--5.2).
+    graph Laplacian on the lifted space for heat diffusion and Poisson solve,
+    and the tangent-plane gradient from ``geometry.kernels`` for the
+    normalised-gradient step.
+
+    The Poisson RHS is computed via an edge-compatible divergence: the
+    normalised gradient is projected onto k-NN spatial edges, ensuring
+    consistency with the graph Laplacian.  A lumped mass matrix scales
+    the initial impulse to account for non-uniform sampling density.
 
     Args:
         points_or_sample:
@@ -215,17 +372,21 @@ def lifted_heat_method(
     if anchor_index is None:
         anchor_index = int(src_idx[0])
 
-    # --- Build Laplacian on the (possibly lifted) level ---
+    # --- Build graph Laplacian on the (possibly lifted) level ---
     W = lifted_affinity(level, k=k_eff, h=h, symmetrize=symmetrize)
     L, W, _ = affinity_to_laplacian(W, normalized=use_normalized)
     W = W.tocsr()
 
-    # --- Step 1: Heat diffusion  (I + tL) u = delta ---
+    # --- Estimate mass matrix and time step ---
+    mass = _estimate_mass_matrix(level, W)
+
     if t is None:
         t = _estimate_time_step(level, W, t_scale)
 
+    # --- Step 1: Heat diffusion  (I + tL) u = M^{-1} delta ---
+    # The mass-scaled RHS accounts for non-uniform sampling density.
     rhs = np.zeros(n_points, dtype=float)
-    rhs[src_idx] = 1.0
+    rhs[src_idx] = 1.0 / mass[src_idx]
 
     A = sparse.eye(n_points, format="csr") + float(t) * L
     u = spla.spsolve(A, rhs)
@@ -236,8 +397,9 @@ def lifted_heat_method(
     grad_norms = np.clip(grad_norms, gradient_eps, None)
     X = -grad_u / grad_norms[:, None]
 
-    # --- Step 3: Poisson solve  L phi = -div(X) ---
-    div_X = lifted_divergence(level, X, W, lam=gradient_lam)
+    # --- Step 3: Poisson solve  L phi = -div_edge(X) ---
+    # Use edge-compatible divergence so the RHS lies in the range of L.
+    div_X = _edge_divergence(level, X, W)
 
     L_poisson, div_rhs = _apply_dirichlet_constraint(
         L,
