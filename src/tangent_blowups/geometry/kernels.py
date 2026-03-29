@@ -538,9 +538,14 @@ def _precompute_edges(level, W, lam):
     S_edges = np.einsum("ea,eb->eab", w_delta, delta)   # (E, d, d)
     S = _scatter_sum_3d(rows, S_edges, N)
 
-    # Relative ridge regularisation
+    # Relative ridge regularisation with absolute floor.
+    # For well-connected vertices, ridge = lam * tr(S) / d (relative).
+    # For isolated / near-zero vertices, use lam * median(tr(S)) / d so
+    # the matrix is always safely invertible.
     tr_S = np.trace(S, axis1=1, axis2=2)                # (N,)
-    ridge = np.where(tr_S > 0, lam * tr_S / d, lam)
+    pos_tr = tr_S[tr_S > 0]
+    fallback_scale = float(np.median(pos_tr)) if pos_tr.size > 0 else 1.0
+    ridge = np.maximum(lam * tr_S / d, lam * fallback_scale / d)
     S += ridge[:, np.newaxis, np.newaxis] * np.eye(d)
 
     # Batch invert (np.linalg.inv is fine for small d x d)

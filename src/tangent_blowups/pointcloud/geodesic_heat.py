@@ -28,14 +28,17 @@ from typing import Literal, Optional, Sequence
 import numpy as np
 from scipy import sparse
 from scipy.sparse import linalg as spla
+from scipy.sparse.csgraph import connected_components
 
 from ..geometry.iterated_grassmann import BlowUpLevel
 from ..geometry.kernels import (
     lifted_affinity,
+    product_affinity,
     affinity_to_laplacian,
     lifted_gradient,
     lifted_divergence,
     _precompute_edges,
+    _knn_edges,
 )
 
 # Keep old import available for backward-compatible input coercion
@@ -281,12 +284,48 @@ def _coerce_to_level(
     return level
 
 
+def _auto_estimate_product_bandwidths(
+    level: BlowUpLevel,
+    k: int,
+) -> tuple[float, float]:
+    """Estimate sigma_x and sigma_u from median k-NN distances.
+
+    Builds a k-NN graph in the Chordal-Sasaki embedding, then computes
+    the median spatial and angular neighbour distances separately.
+
+    Returns:
+        (sigma_x, sigma_u) — median spatial distance, median angular distance.
+    """
+    rows, cols, _ = _knn_edges(level.embedded, k)
+
+    # Spatial distances
+    positions = level.embedded[:, :level.n_orig]
+    dx = positions[rows] - positions[cols]
+    dist_x = np.sqrt(np.einsum("ij,ij->i", dx, dx))
+    dist_x = dist_x[dist_x > 0.0]
+    sigma_x = float(np.median(dist_x)) if dist_x.size > 0 else 1.0
+
+    # Angular distances (chordal: ||P_i - P_j||_F)
+    U = level.frame  # (N, D, d)
+    M = np.einsum("eka,ekb->eab", U[rows], U[cols])   # (E, d, d)
+    inner_sq = np.einsum("eab,eab->e", M, M)
+    proj_dist2 = np.clip(2.0 * level.d - 2.0 * inner_sq, 0.0, None)
+    dist_u = np.sqrt(proj_dist2)
+    dist_u = dist_u[dist_u > 0.0]
+    sigma_u = float(np.median(dist_u)) if dist_u.size > 0 else 1.0
+
+    return sigma_x, sigma_u
+
+
 def lifted_heat_method(
     points_or_sample: BlowUpLevel | np.ndarray | BlownUpSample,
     subspace_basis: np.ndarray | None = None,
     *,
     source_index: int | Sequence[int] | np.ndarray = 0,
     k: int | None = 30,
+    kernel: Literal["product", "self-tuning"] = "product",
+    sigma_x: float | None = None,
+    sigma_u: float | list[float] | np.ndarray | None = None,
     h: float | Literal["local"] | None = "local",
     alpha: float = 1.0,
     laplacian_normalized: bool = False,
@@ -334,7 +373,32 @@ def lifted_heat_method(
             is a raw array.
         source_index: Index (or indices) of the source point(s).
         k:  k-NN neighbourhood size.
-        h:  Bandwidth for self-tuning kernel (``"local"``, ``None``, or float).
+        kernel: Kernel type for the affinity matrix.
+
+            - ``"product"`` (default): Fixed-bandwidth product kernel with
+              independent spatial and angular bandwidths::
+
+                  W_ij = exp(-||x_i - x_j||^2 / sigma_x^2)
+                       * exp(-||P_i - P_j||_F^2 / sigma_u^2)
+
+              Smaller ``sigma_x`` tightens spatial neighbourhoods; smaller
+              ``sigma_u`` increases emphasis on angular (normal) separation.
+              If ``sigma_x`` or ``sigma_u`` are None, they are auto-estimated
+              from the median k-NN spatial and angular distances respectively.
+              PD by the Schur product theorem.
+
+            - ``"self-tuning"``: Zelnik-Manor & Perona adaptive bandwidth
+              on the Chordal-Sasaki embedding.  Uses the ``h`` parameter.
+              NOT guaranteed PSD.
+
+        sigma_x: Spatial bandwidth for the product kernel (> 0, or None for
+            auto-estimation).  Ignored when ``kernel="self-tuning"``.
+        sigma_u: Angular bandwidth(s) for the product kernel.  A single float
+            applies the same bandwidth to all projector levels; a list/array
+            assigns one per level.  None for auto-estimation.
+            Ignored when ``kernel="self-tuning"``.
+        h:  Bandwidth for the self-tuning kernel (``"local"``, ``None``, or
+            float).  Ignored when ``kernel="product"``.
         alpha:  Chordal-Sasaki weight for the lift.  ``alpha=0`` gives the
             standard Euclidean heat method (no lifting).
         laplacian_normalized: Use symmetric-normalised Laplacian if True.
@@ -372,8 +436,21 @@ def lifted_heat_method(
     if anchor_index is None:
         anchor_index = int(src_idx[0])
 
-    # --- Build graph Laplacian on the (possibly lifted) level ---
-    W = lifted_affinity(level, k=k_eff, h=h, symmetrize=symmetrize)
+    # --- Build affinity matrix ---
+    if kernel == "product":
+        sx, su = sigma_x, sigma_u
+        if sx is None or su is None:
+            auto_sx, auto_su = _auto_estimate_product_bandwidths(level, k_eff)
+            if sx is None:
+                sx = auto_sx
+            if su is None:
+                su = auto_su
+        W = product_affinity(level, sx, su, k=k_eff, symmetrize=symmetrize)
+    elif kernel == "self-tuning":
+        W = lifted_affinity(level, k=k_eff, h=h, symmetrize=symmetrize)
+    else:
+        raise ValueError(f"Unknown kernel type: {kernel!r}")
+
     L, W, _ = affinity_to_laplacian(W, normalized=use_normalized)
     W = W.tocsr()
 
@@ -407,6 +484,22 @@ def lifted_heat_method(
         anchor_index=int(anchor_index),
         anchor_value=0.0,
     )
+
+    # When tight kernels create disconnected components, anchor one node
+    # per extra component so the Poisson system is non-singular.
+    n_comp, comp_labels = connected_components(W, directed=False, connection="weak")
+    if n_comp > 1:
+        src_label = comp_labels[anchor_index]
+        L_poisson = L_poisson.tolil()
+        for c in range(n_comp):
+            if c == src_label:
+                continue
+            idx = int(np.flatnonzero(comp_labels == c)[0])
+            L_poisson.rows[idx] = [idx]
+            L_poisson.data[idx] = [1.0]
+            div_rhs[idx] = 0.0
+        L_poisson = L_poisson.tocsr()
+
     phi = spla.spsolve(L_poisson, div_rhs)
 
     if return_intermediate:

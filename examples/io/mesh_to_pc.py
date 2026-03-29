@@ -320,7 +320,7 @@ def main() -> None:
     parser.add_argument(
         "--max-points",
         type=int,
-        default=25000,
+        default=50000,
         help="If set, downsample point clouds to at most this many points (e.g. 25000).",
     )
     parser.add_argument(

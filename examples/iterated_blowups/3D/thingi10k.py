@@ -42,7 +42,7 @@ from tangent_blowups.solvers.linalg import normalize_vectors
 # ---------------------------------------------------------------------------
 # Parameters
 # ---------------------------------------------------------------------------
-K_BLOWUP       = 20       # k-NN for blow-up curvature regression
+K_BLOWUP       = 100       # k-NN for blow-up curvature regression
 ALPHA          = 5.0       # Chordal-Sasaki weight
 LAM            = 1e-3      # ridge regularisation
 
