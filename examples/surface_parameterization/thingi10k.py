@@ -43,11 +43,11 @@ from scipy.sparse import linalg as spla
 from tangent_blowups.clustering import spectral_clustering_from_laplacian
 from tangent_blowups.geometry.grassmann import BlownUpSample
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
-from tangent_blowups.geometry.kernels import (
-    lifted_laplacian, affinity_to_laplacian, _knn_edges,
-)
+from tangent_blowups.geometry.kernels import lifted_laplacian
 from tangent_blowups.io.load import load_pointcloud
-from tangent_blowups.pointcloud import pointcloud_laplacian
+from tangent_blowups.pointcloud import (
+    pointcloud_laplacian, bilateral_pointcloud_laplacian,
+)
 from tangent_blowups.solvers.linalg import normalize_vectors
 
 # -- Constants ---------------------------------------------------------------
@@ -104,54 +104,6 @@ def _load(name: str, *, rotate: np.ndarray | None = None):
         pts = pts @ rotate.T
         nrm = nrm @ rotate.T
     return pts, nrm
-
-
-# -- Bilateral Laplacian -----------------------------------------------------
-def _bilateral_laplacian(
-    pts: np.ndarray,
-    nrm: np.ndarray,
-    *,
-    k: int = 30,
-    sigma_x: float | None = None,
-    sigma_n: float | None = None,
-) -> tuple[sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix]:
-    """Graph Laplacian with bilateral (spatial + normal) kernel.
-
-    W_ij = exp(-||x_i - x_j||^2 / sigma_x^2)
-         * exp(-||n_i - n_j||^2 / sigma_n^2)
-
-    Bandwidths default to median k-NN distances in each space.
-    """
-    N = len(pts)
-    tree = cKDTree(pts)
-    dist_sq, nn_idx = tree.query(pts, k=k + 1)
-    dist_sq = dist_sq[:, 1:] ** 2
-    nn_idx = nn_idx[:, 1:]
-
-    rows = np.repeat(np.arange(N), k)
-    cols = nn_idx.ravel()
-
-    # Spatial distances
-    dx = pts[cols] - pts[rows]
-    d2_x = np.einsum("ij,ij->i", dx, dx)
-
-    # Normal distances
-    dn = nrm[cols] - nrm[rows]
-    d2_n = np.einsum("ij,ij->i", dn, dn)
-
-    # Auto bandwidths from median k-NN distances
-    if sigma_x is None:
-        sigma_x = float(np.median(np.sqrt(d2_x[d2_x > 0])))
-    if sigma_n is None:
-        sigma_n = float(np.median(np.sqrt(d2_n[d2_n > 0])))
-
-    w = np.exp(-d2_x / (sigma_x ** 2)) * np.exp(-d2_n / (sigma_n ** 2))
-
-    W = sparse.csr_matrix((w, (rows, cols)), shape=(N, N))
-    W = W + W.T  # symmetrise
-    W.data *= 0.5
-
-    return affinity_to_laplacian(W, normalized=True)
 
 
 # -- Mass matrix estimation --------------------------------------------------
@@ -413,7 +365,7 @@ def main():
 
     # (b) Bilateral
     print("Bilateral spectral segmentation ...", end="", flush=True)
-    L_bil, _, _ = _bilateral_laplacian(pts, nrm, k=k)
+    L_bil = bilateral_pointcloud_laplacian(pts, nrm, k=k, normalized=True)
     lab_bil, n_bil, noise_bil, cnt_bil = _cluster(
         L_bil, n_comp, **dbscan_kw)
     print(f" {n_bil} clusters"

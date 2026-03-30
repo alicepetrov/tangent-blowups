@@ -32,7 +32,9 @@ from scipy.spatial import cKDTree
 from scipy.sparse import linalg as spla
 from scipy.sparse.csgraph import connected_components
 
-from tangent_blowups.pointcloud import lifted_heat_method
+from tangent_blowups.pointcloud import (
+    lifted_heat_method, bilateral_pointcloud_laplacian,
+)
 from tangent_blowups.pointcloud.geodesic_heat import _normals_to_tangent_frames
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.geometry.kernels import product_affinity, affinity_to_laplacian
@@ -260,19 +262,10 @@ def _bilateral_affinity(
     k: int,
 ) -> sparse.csr_matrix:
     """Bilateral kernel: spatial Gaussian x normal Gaussian, sparse k-NN."""
-    N = len(points)
-    tree = cKDTree(points)
-    dist, idx = tree.query(points, k=min(k + 1, N))
-    dist, idx = dist[:, 1:], idx[:, 1:]
-    rows = np.repeat(np.arange(N), idx.shape[1])
-    cols = idx.ravel()
-    dx = points[rows] - points[cols]
-    dist2_x = np.einsum("ij,ij->i", dx, dx)
-    dn = normals[rows] - normals[cols]
-    dist2_n = np.einsum("ij,ij->i", dn, dn)
-    vals = np.exp(-dist2_x / (sigma_x ** 2) - dist2_n / (sigma_n ** 2))
-    W = sparse.csr_matrix((vals, (rows, cols)), shape=(N, N))
-    return W + W.T
+    _, W, _ = bilateral_pointcloud_laplacian(
+        points, normals, k=k, sigma_x=sigma_x, sigma_n=sigma_n,
+        normalized=False, return_parts=True)
+    return W
 
 
 def _estimate_time_step_pts(points, W, t_scale):

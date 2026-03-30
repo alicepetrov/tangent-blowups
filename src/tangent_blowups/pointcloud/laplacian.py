@@ -201,6 +201,93 @@ def pointcloud_laplacian(
         return L, W, D
     return L
 
+def bilateral_pointcloud_laplacian(
+    points: np.ndarray,
+    normals: np.ndarray,
+    *,
+    k: int = 30,
+    sigma_x: float | None = None,
+    sigma_n: float | None = None,
+    symmetrize: bool = True,
+    normalized: bool = False,
+    return_parts: bool = False,
+    workers: int = -1,
+    eps: float = 1e-12,
+) -> LaplacianReturn:
+    """Build a bilateral graph Laplacian weighted by spatial AND normal similarity.
+
+    The affinity between points *i* and *j* is::
+
+        W_ij = exp(-||x_i - x_j||^2 / sigma_x^2)
+             * exp(-||n_i - n_j||^2 / sigma_n^2)
+
+    This is the standard normal-aware baseline for point cloud processing.
+    It distinguishes nearby points with different normals (e.g. at sharp
+    edges) but, unlike the lifted Laplacian, cannot separate overlapping
+    sheets that share similar normals at different spatial locations.
+
+    Args:
+        points:  (N, d) spatial coordinates.
+        normals: (N, d) unit surface normals.
+        k:       k-NN neighbourhood size (built in spatial coordinates).
+        sigma_x: Spatial bandwidth.  If None, set to the median spatial
+                 k-NN distance.
+        sigma_n: Normal bandwidth.  If None, set to the median normal
+                 k-NN distance.
+        symmetrize: Symmetrise the affinity matrix.
+        normalized: Return symmetric-normalised Laplacian if True.
+        return_parts: If True, return (L, W, D).
+        workers: cKDTree parallelism (-1 = all cores).
+        eps:     Numerical tolerance for normalised Laplacian.
+    """
+    from scipy.spatial import cKDTree
+
+    P = _as_points(points)
+    N_pts = np.asarray(normals, dtype=float)
+    if P.shape != N_pts.shape:
+        raise ValueError(
+            f"points {P.shape} and normals {N_pts.shape} must match.")
+    n = P.shape[0]
+    if n == 0:
+        empty = sparse.csr_matrix((0, 0), dtype=float)
+        if return_parts:
+            return empty, empty, empty
+        return empty
+
+    tree = cKDTree(P)
+    _, nn_idx = tree.query(P, k=min(k + 1, n), workers=workers)
+    nn_idx = nn_idx[:, 1:]  # drop self
+
+    rows = np.repeat(np.arange(n), nn_idx.shape[1])
+    cols = nn_idx.ravel()
+
+    dx = P[cols] - P[rows]
+    d2_x = np.einsum("ij,ij->i", dx, dx)
+
+    dn = N_pts[cols] - N_pts[rows]
+    d2_n = np.einsum("ij,ij->i", dn, dn)
+
+    # Auto-bandwidths from median k-NN distances
+    if sigma_x is None:
+        pos = d2_x[d2_x > 0]
+        sigma_x = float(np.median(np.sqrt(pos))) if pos.size > 0 else 1.0
+    if sigma_n is None:
+        pos = d2_n[d2_n > 0]
+        sigma_n = float(np.median(np.sqrt(pos))) if pos.size > 0 else 1.0
+
+    w = np.exp(-d2_x / (sigma_x ** 2)) * np.exp(-d2_n / (sigma_n ** 2))
+
+    W = sparse.csr_matrix((w, (rows, cols)), shape=(n, n))
+    if symmetrize:
+        W = W + W.T
+        W.data *= 0.5
+
+    L, W, D = _laplacian_from_weight(W, normalized=normalized, eps=eps)
+    if return_parts:
+        return L, W, D
+    return L
+
+
 def _coerce_blown_up(
     points_or_sample: np.ndarray | BlownUpSample,
     subspace_basis: np.ndarray | None,
@@ -487,6 +574,7 @@ def laplacian_spectrum(
 
 __all__ = [
     "pointcloud_laplacian",
+    "bilateral_pointcloud_laplacian",
     "lifted_pointcloud_laplacian",
     "laplacian_spectrum",
 ]

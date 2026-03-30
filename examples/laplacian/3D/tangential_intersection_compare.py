@@ -26,7 +26,7 @@ from scipy import sparse
 from tangent_blowups.testsupport import RandomSurface, plane_paraboloid_tangent, sample
 from tangent_blowups.geometry.iterated_grassmann import iterated_blowup
 from tangent_blowups.geometry.kernels import product_affinity, affinity_to_laplacian
-from tangent_blowups.pointcloud.laplacian import laplacian_spectrum
+from tangent_blowups.pointcloud import bilateral_pointcloud_laplacian, laplacian_spectrum
 
 # ---------------------------------------------------------------------------
 # Parameters
@@ -78,21 +78,10 @@ def _bilateral_affinity(
     k: int,
 ) -> sparse.csr_matrix:
     """Bilateral kernel: spatial Gaussian x normal Gaussian, sparse k-NN."""
-    N = len(points)
-    tree = cKDTree(points)
-    dist, idx = tree.query(points, k=min(k + 1, N))
-    dist, idx = dist[:, 1:], idx[:, 1:]  # drop self
-    rows = np.repeat(np.arange(N), idx.shape[1])
-    cols = idx.ravel()
-    # Spatial factor
-    dx = points[rows] - points[cols]
-    dist2_x = np.einsum("ij,ij->i", dx, dx)
-    # Normal factor
-    dn = normals[rows] - normals[cols]
-    dist2_n = np.einsum("ij,ij->i", dn, dn)
-    vals = np.exp(-dist2_x / (sigma_x ** 2) - dist2_n / (sigma_n ** 2))
-    W = sparse.csr_matrix((vals, (rows, cols)), shape=(N, N))
-    return W + W.T  # symmetrize
+    _, W, _ = bilateral_pointcloud_laplacian(
+        points, normals, k=k, sigma_x=sigma_x, sigma_n=sigma_n,
+        normalized=False, return_parts=True)
+    return W
 
 
 def _clean_ax3d(ax) -> None:
