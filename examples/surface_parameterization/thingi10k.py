@@ -365,7 +365,9 @@ def main():
 
     # (b) Bilateral
     print("Bilateral spectral segmentation ...", end="", flush=True)
-    L_bil = bilateral_pointcloud_laplacian(pts, nrm, k=k, normalized=True)
+    L_bil = bilateral_pointcloud_laplacian(
+        pts, nrm, k=k, sigma_x=args.sigma_x, sigma_n=args.sigma_u,
+        normalized=True)
     lab_bil, n_bil, noise_bil, cnt_bil = _cluster(
         L_bil, n_comp, **dbscan_kw)
     print(f" {n_bil} clusters"
