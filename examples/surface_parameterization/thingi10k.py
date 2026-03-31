@@ -312,9 +312,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="Surface parameterization: segmentation comparison + SCP")
     parser.add_argument("--pointcloud", "-p", type=str, default=None)
-    parser.add_argument("--n-clusters", "-n", type=int, default=11,
+    parser.add_argument("--n-clusters", "-n", type=int, default=15,
                         help="Spectral embedding dimension for DBSCAN")
-    parser.add_argument("--dbscan-eps", type=float, default=0.11)
+    parser.add_argument("--dbscan-eps", type=float, default=0.1)
     parser.add_argument("--dbscan-min-samples", type=int, default=10)
     parser.add_argument("--k", type=int, default=30)
     parser.add_argument("--alpha", type=float, default=1.0)
