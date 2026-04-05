@@ -487,6 +487,51 @@ def klein_bottle(radius: float = 2.0, scale: float = 1.0) -> ParametricSurface:
     return ParametricSurface(position=pos, tangent=tan, normal=norm)
 
 
+def torus(R: float = 2.0, r: float = 1.0) -> ParametricSurface:
+    """
+    Torus of revolution.
+
+    Parametrization (u, v in [0, 2*pi]):
+        x = (R + r*cos(v)) * cos(u)
+        y = (R + r*cos(v)) * sin(u)
+        z = r * sin(v)
+
+    R is the major radius (center of tube to center of torus),
+    r is the minor radius (tube radius).
+    """
+
+    def pos(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        cu, su = np.cos(u), np.sin(u)
+        cv, sv = np.cos(v), np.sin(v)
+        a = R + r * cv
+        return np.stack([a * cu, a * su, r * sv], axis=-1)
+
+    def tan(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        cu, su = np.cos(u), np.sin(u)
+        cv, sv = np.cos(v), np.sin(v)
+        a = R + r * cv
+        du = np.stack([-a * su, a * cu, np.zeros_like(u)], axis=-1)
+        dv = np.stack([-r * sv * cu, -r * sv * su, r * cv], axis=-1)
+        e1 = normalize_vectors(du)
+        dv_perp = dv - np.sum(dv * e1, axis=-1, keepdims=True) * e1
+        e2 = normalize_vectors(dv_perp)
+        return np.stack([e1, e2], axis=-1)
+
+    def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        cu, su = np.cos(u), np.sin(u)
+        cv, sv = np.cos(v), np.sin(v)
+        # Outward normal: (cos(v)*cos(u), cos(v)*sin(u), sin(v))
+        return np.stack([cv * cu, cv * su, sv], axis=-1)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
 def cone(scale_r: float = 1.0, scale_z: float = 1.0) -> ParametricSurface:
     """
     Double cone parameterization.

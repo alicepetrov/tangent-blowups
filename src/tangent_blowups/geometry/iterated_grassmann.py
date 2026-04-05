@@ -232,6 +232,7 @@ class BlowUpLevel:
         k: int = 16,
         alpha: float = 1.0,
         lam: float = 1e-3,
+        spatial_knn: bool = False,
     ) -> "BlowUpLevel":
         """
         Compute one step of the iterated blow-up.
@@ -244,8 +245,7 @@ class BlowUpLevel:
 
           2. Estimate curvature operator B_i by weighted ridge regression:
                C_ij = N_i^T (P_j - P_i) U_i  ~  B_i t_ij
-             where t_ij = U_i^T (Phi_j^{ell-1} - Phi_i^{ell-1}) and
-             k-NN is taken in Phi^{ell}.
+             where t_ij = U_i^T (Phi_j^{ell-1} - Phi_i^{ell-1}).
 
           3. Construct tangent vectors for each basis direction a = 1..d:
                g_a = (U_i e_a,  sqrt(alpha/2) * vec(N_i A_a U_i^T + U_i A_a^T N_i^T))
@@ -255,6 +255,14 @@ class BlowUpLevel:
             k:     number of nearest neighbours for curvature estimation.
             alpha: Chordal-Sasaki weight (alpha_ell in the theory).
             lam:   ridge regularisation parameter (>= 0).
+            spatial_knn:  Controls the Gaussian weighting in the curvature
+                regression.  Neighbor *selection* always uses the lifted
+                Chordal-Sasaki metric (which separates sheets at
+                self-intersections).  If True, the Gaussian weights use
+                spatial (level-(ell-1)) distances, avoiding the scale
+                compression that attenuates curvature estimates in
+                high-curvature regions.  If False (default), the Gaussian
+                weights use lifted distances (original behaviour).
 
         Returns:
             BlowUpLevel at level ell = self.level + 1.
@@ -274,7 +282,7 @@ class BlowUpLevel:
         # ----------------------------------------------------------------
         k_eff = min(k, N - 1)
 
-        # k-NN in the level-ell embedded space
+        # k-NN in the lifted Chordal-Sasaki space (separates sheets)
         tree = cKDTree(Phi_next)
         _, nn_idx = tree.query(Phi_next, k=k_eff + 1)  # (N, k_eff+1) incl. self
         nn_idx = nn_idx[:, 1:]                          # (N, k_eff) excl. self
@@ -291,13 +299,19 @@ class BlowUpLevel:
             Pi = P_all[i]               # (D, D)
             neighbors = nn_idx[i]       # (k_eff,)
 
-            # Gaussian weights with self-tuning bandwidth (q-th neighbor dist)
-            d_phi = Phi_next[neighbors] - Phi_next[i]     # (k_eff, D_next)
-            dist2 = np.einsum("ki,ki->k", d_phi, d_phi)   # (k_eff,)
+            # Gaussian weights with self-tuning bandwidth
+            if spatial_knn:
+                # Spatial distances — avoids scale compression in the
+                # lifted metric that attenuates curvature estimates.
+                d_w = self.embedded[neighbors] - self.embedded[i]   # (k_eff, D)
+            else:
+                # Lifted distances (original behaviour)
+                d_w = Phi_next[neighbors] - Phi_next[i]             # (k_eff, D_next)
+            dist2 = np.einsum("ki,ki->k", d_w, d_w)                # (k_eff,)
             sorted_d2 = np.sort(dist2)
             q = min(7, k_eff - 1)
             bw = sorted_d2[q] if sorted_d2[q] > 0 else 1.0
-            w = np.exp(-dist2 / bw)                        # (k_eff,)
+            w = np.exp(-dist2 / bw)                                  # (k_eff,)
 
             # Intrinsic coords: t_ij = U_i^T (Phi_j^{ell-1} - Phi_i^{ell-1})
             d_emb = self.embedded[neighbors] - self.embedded[i]  # (k_eff, D)
