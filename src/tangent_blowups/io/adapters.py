@@ -384,7 +384,7 @@ def detect_normal_singularities(
     points: np.ndarray,
     normals: np.ndarray,
     *,
-    k: int = 16,
+    k: int = 20,
     min_angle_deg: float = 45.0,
     orientation_invariant: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:

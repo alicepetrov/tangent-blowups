@@ -57,7 +57,7 @@ def main():
     jitter = 0.02
     seed = 7
 
-    k = 16
+    k = 20
     alpha = 1.0
     laplacian_normalized = False
     t = None

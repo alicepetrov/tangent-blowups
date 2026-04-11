@@ -65,3 +65,26 @@ def mean_projector(projectors: np.ndarray) -> np.ndarray:
     U_mean = vecs[:, -k_approx:]
     
     return basis_to_projector(U_mean)
+
+
+# -------------------------------------------------------------------------
+# Grassmannian distances from orthonormal bases
+# -------------------------------------------------------------------------
+
+def principal_angles(U1: np.ndarray, U2: np.ndarray) -> np.ndarray:
+    """Principal angles between two subspaces.
+
+    Args:
+        U1, U2: (n, k) orthonormal matrices.
+
+    Returns:
+        (k,) angles in radians in [0, pi/2].
+    """
+    s = np.linalg.svd(U1.T @ U2, compute_uv=False)
+    s = np.clip(s, 0.0, 1.0)
+    return np.arccos(s)
+
+
+def dist_geodesic(U1: np.ndarray, U2: np.ndarray) -> float:
+    """Riemannian (geodesic) distance on G(k, n)."""
+    return float(np.linalg.norm(principal_angles(U1, U2)))

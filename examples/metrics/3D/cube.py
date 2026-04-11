@@ -1,7 +1,7 @@
 import numpy as np
 from typing import Optional
 
-from tangent_blowups.geometry.grassmann import BlownUpSample
+from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.testsupport import RandomSurface, cube_surface
 from tangent_blowups.testsupport.sample_utils import (
     filter_sample_vectors,
@@ -55,7 +55,7 @@ def build_cube_points_and_normals(
 
 
 def _run_distance_plots(
-    sample: BlownUpSample,
+    sample: BlowUpLevel,
     *,
     query_index: int,
     alpha: float,
@@ -97,7 +97,7 @@ def main():
         seed=7,
     )
 
-    lifted = BlownUpSample.from_normals(points, normals)
+    lifted = BlowUpLevel.from_normals(points, normals)
 
     alpha = 1.0
     downsample = 2

@@ -198,7 +198,7 @@ def main() -> None:
     k_pca        = 20    # k-NN for local PCA normal estimation
     k_kernel     = 20    # k-NN for affinity construction
     alpha        = 1.0
-    lam          = 1e-3
+    lam = 0.0
     normalized   = True
     random_state = 7
 

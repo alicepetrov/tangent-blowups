@@ -2,14 +2,9 @@
 Lifted Kernels and Affinity Matrices
 --------------------------------------
 Kernels on the product space R^n x Gr(d, n) arising from the tangent blow-up
-construction.  Three families are provided, all operating on BlowUpLevel data:
+construction.  Two families are provided, both operating on BlowUpLevel data:
 
-1. **Lifted Gaussian** (single bandwidth):
-       K_sigma((p, U), (q, V)) = exp(-d_M^2 / sigma^2)
-   where d_M^2 = ||Phi_i - Phi_j||^2 is the squared Chordal-Sasaki distance
-   already encoded in BlowUpLevel.embedded.
-
-2. **Product kernel** (multi-scale, independent spatial and angular bandwidths):
+1. **Product kernel** (multi-scale, independent spatial and angular bandwidths):
        K = exp(-||x_i - x_j||^2 / sigma_x^2)
          * prod_{m=0}^{ell} exp(-||P_i^(m) - P_j^(m)||_F^2 / sigma_m^2)
    where x_i are the original spatial positions and P_i^(m) is the
@@ -17,19 +12,16 @@ construction.  Three families are provided, all operating on BlowUpLevel data:
    kernel.  At higher levels, one angular factor per blow-up level is
    included, each with an independent bandwidth sigma_m.
 
-3. **Self-tuning affinity** (Zelnik-Manor & Perona 2004):
+2. **Self-tuning affinity** (Zelnik-Manor & Perona 2004):
        W_ij = exp(-d_M^2 / (h_i * h_j))
    with h_i = distance from Phi_i to its k-th nearest neighbour in the
    Chordal-Sasaki metric.  This adapts the bandwidth pointwise to the local
    density of the lifted point cloud.
 
 Positive definiteness notes:
-- The fixed-bandwidth Gaussian (kernel 1) is positive definite: it is a
-  Gaussian RBF on the isometric Euclidean embedding, so PD follows from
-  Bochner's theorem.
-- The product kernel (kernel 2) is positive definite by the Schur product
+- The product kernel (kernel 1) is positive definite by the Schur product
   theorem: the pointwise product of two PD kernels is PD.
-- The self-tuning kernel (kernel 3) with pointwise-varying h_i h_j is NOT
+- The self-tuning kernel (kernel 2) with pointwise-varying h_i h_j is NOT
   guaranteed positive semidefinite.  The adaptive bandwidth breaks the
   stationarity required by Bochner's theorem.
 - In all cases, only the full (dense) Gram matrix inherits these PD
@@ -53,6 +45,7 @@ from scipy import sparse
 from scipy.spatial import cKDTree
 
 from .iterated_grassmann import BlowUpLevel
+from .weight_config import WeightConfig, product_weights
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +181,7 @@ def _assemble_affinity(
 def lifted_affinity(
     level: BlowUpLevel,
     *,
-    k: int = 30,
+    k: int = 20,
     h: float | Literal["local"] | None = "local",
     symmetrize: bool = True,
 ) -> sparse.csr_matrix:
@@ -233,50 +226,12 @@ def lifted_affinity(
     return _assemble_affinity(N, rows, cols, weights, symmetrize=symmetrize)
 
 
-def lifted_gaussian_affinity(
-    level: BlowUpLevel,
-    sigma: float,
-    *,
-    k: int = 30,
-    symmetrize: bool = True,
-) -> sparse.csr_matrix:
-    """
-    Fixed-bandwidth lifted Gaussian affinity in the Chordal-Sasaki metric:
-
-        W_ij = exp(-||Phi_i - Phi_j||^2 / sigma^2)
-
-    This is the single-bandwidth kernel from Section "Lifted Kernels, Part 4"
-    of the theoretical notes.  The underlying kernel is positive definite
-    (Gaussian RBF on the isometric Euclidean embedding, by Bochner's theorem),
-    but the sparse k-NN approximation returned here is not generally PSD.
-    The graph Laplacian L = D - W built from this matrix is PSD by construction.
-
-    Args:
-        level:      BlowUpLevel.
-        sigma:      Bandwidth (> 0).
-        k:          k-NN neighbourhood size.
-        symmetrize: Make W symmetric.
-
-    Returns:
-        Sparse symmetric (N, N) affinity matrix.
-    """
-    if sigma <= 0.0:
-        raise ValueError(f"sigma must be positive, got {sigma}.")
-    N = level.N
-    if N == 0:
-        return sparse.csr_matrix((0, 0), dtype=float)
-
-    rows, cols, dist2 = _knn_edges(level.embedded, k)
-    weights = np.exp(-dist2 / (sigma * sigma))
-    return _assemble_affinity(N, rows, cols, weights, symmetrize=symmetrize)
-
-
 def product_affinity(
     level: BlowUpLevel,
     sigma_x: float,
     sigma_u: float | list[float] | np.ndarray,
     *,
-    k: int = 30,
+    k: int = 20,
     symmetrize: bool = True,
 ) -> sparse.csr_matrix:
     """
@@ -350,13 +305,18 @@ def product_affinity(
     weights = np.exp(-dist2_spatial / (sigma_x * sigma_x))
 
     # --- Angular factors for levels 0..ell-1 (from embedded blocks) ---
+    # Process large blocks in column chunks to avoid OOM at level 2+
+    # (e.g. level-1 projector block has D^2 = 144 columns at level 2).
+    _BLOCK_CHUNK = 32
+    E = rows.shape[0]
     for m, (start, ncols, scale) in enumerate(level._proj_blocks):
-        block_diff = (level.embedded[rows, start:start + ncols]
-                      - level.embedded[cols, start:start + ncols])
-        # block_diff = scale * (vec(P_i^(m)) - vec(P_j^(m)))
-        # so ||block_diff||^2 = scale^2 * ||P^(m)_i - P^(m)_j||_F^2
-        scaled_dist2 = np.einsum("ij,ij->i", block_diff, block_diff)
-        # exp(-||P||_F^2 / sigma_m^2) = exp(-scaled_dist2 / (scale^2 * sigma_m^2))
+        scaled_dist2 = np.zeros(E, dtype=float)
+        for c0 in range(0, ncols, _BLOCK_CHUNK):
+            c1 = min(c0 + _BLOCK_CHUNK, ncols)
+            diff = (level.embedded[rows, start + c0:start + c1]
+                    - level.embedded[cols, start + c0:start + c1])
+            scaled_dist2 += np.einsum("ij,ij->i", diff, diff)
+        # scaled_dist2 = scale^2 * ||P^(m)_i - P^(m)_j||_F^2
         denom = scale * scale * sigmas[m] * sigmas[m]
         weights *= np.exp(-scaled_dist2 / denom)
 
@@ -423,12 +383,11 @@ def affinity_to_laplacian(
 def lifted_laplacian(
     level: BlowUpLevel,
     *,
-    kernel: Literal["self_tuning", "gaussian", "product"] = "self_tuning",
-    k: int = 30,
+    kernel: Literal["self_tuning", "product"] = "product",
+    k: int = 20,
     h: float | Literal["local"] | None = "local",
-    sigma: float | None = None,
-    sigma_x: float | None = None,
-    sigma_u: float | list[float] | None = None,
+    sigma_x: float = 0.5,
+    sigma_u: float | list[float] = 0.5,
     normalized: bool = False,
     symmetrize: bool = True,
     eps: float = 1e-12,
@@ -441,14 +400,13 @@ def lifted_laplacian(
 
     Args:
         level:      BlowUpLevel (any level).
-        kernel:     "self_tuning" (default), "gaussian", or "product".
+        kernel:     "product" (default) or "self_tuning".
         k:          k-NN neighbourhood size.
         h:          Bandwidth for "self_tuning" kernel.
-        sigma:      Bandwidth for "gaussian" kernel.
-        sigma_x:    Spatial bandwidth for "product" kernel.
-        sigma_u:    Angular bandwidth(s) for "product" kernel.  A single
-                    float applies the same bandwidth to all projector levels;
-                    a list assigns independent bandwidths per level.
+        sigma_x:    Spatial bandwidth for "product" kernel (default 0.5).
+        sigma_u:    Angular bandwidth(s) for "product" kernel (default 0.5).
+                    A single float applies the same bandwidth to all projector
+                    levels; a list assigns independent bandwidths per level.
         normalized: Symmetric normalized Laplacian if True.
         symmetrize: Symmetrize the affinity matrix.
         eps:        Degree threshold for normalized Laplacian.
@@ -458,18 +416,10 @@ def lifted_laplacian(
     """
     if kernel == "self_tuning":
         W = lifted_affinity(level, k=k, h=h, symmetrize=symmetrize)
-    elif kernel == "gaussian":
-        if sigma is None:
-            raise ValueError("sigma is required for the 'gaussian' kernel.")
-        W = lifted_gaussian_affinity(level, sigma, k=k, symmetrize=symmetrize)
     elif kernel == "product":
-        if sigma_x is None or sigma_u is None:
-            raise ValueError(
-                "sigma_x and sigma_u are both required for the 'product' kernel."
-            )
         W = product_affinity(level, sigma_x, sigma_u, k=k, symmetrize=symmetrize)
     else:
-        raise ValueError(f"Unknown kernel '{kernel}'. Choose 'self_tuning', 'gaussian', or 'product'.")
+        raise ValueError(f"Unknown kernel '{kernel}'. Choose 'product' or 'self_tuning'.")
 
     return affinity_to_laplacian(W, normalized=normalized, eps=eps)
 
@@ -566,7 +516,7 @@ def lifted_gradient(
     f: np.ndarray,
     W: sparse.csr_matrix,
     *,
-    lam: float = 1e-3,
+    lam: float = 0.0,
     _edge_cache: dict | None = None,
 ) -> np.ndarray:
     """
@@ -638,7 +588,7 @@ def lifted_divergence(
     X: np.ndarray,
     W: sparse.csr_matrix,
     *,
-    lam: float = 1e-3,
+    lam: float = 0.0,
     _edge_cache: dict | None = None,
 ) -> np.ndarray:
     """
@@ -701,118 +651,12 @@ def lifted_divergence(
     return div
 
 
-def div_grad_operator(
-    level: BlowUpLevel,
-    W: sparse.csr_matrix,
-    *,
-    lam: float = 1e-3,
-):
-    """
-    Return a ``scipy.sparse.linalg.LinearOperator`` for div(grad).
-
-    This wraps the vectorised gradient and divergence so that eigensolvers
-    can compute the spectrum without materialising the dense N x N matrix.
-
-    Note: shift-invert (``sigma=...``) requires an explicit matrix.
-    Use ``which='SA'`` with this operator, or use
-    :func:`div_grad_laplacian` to get an explicit sparse matrix instead.
-
-    Usage::
-
-        from scipy.sparse.linalg import eigsh
-        op = div_grad_operator(level, W)
-        evals, evecs = eigsh(op, k=6, which='SA')
-
-    Args:
-        level:  BlowUpLevel.
-        W:      Sparse affinity matrix.
-        lam:    Tikhonov regularisation for gradient/divergence.
-
-    Returns:
-        LinearOperator of shape ``(N, N)``.
-    """
-    from scipy.sparse.linalg import LinearOperator
-
-    N = level.N
-    ec = _precompute_edges(level, W, lam)
-
-    def _matvec(f):
-        grad_f = lifted_gradient(level, f, W, lam=lam, _edge_cache=ec)
-        return lifted_divergence(level, grad_f, W, lam=lam, _edge_cache=ec)
-
-    return LinearOperator((N, N), matvec=_matvec, dtype=float)
-
-
-def div_grad_laplacian(
-    level: BlowUpLevel,
-    W: sparse.csr_matrix,
-    *,
-    lam: float = 1e-3,
-) -> sparse.csr_matrix:
-    """
-    Assemble the div(grad) operator as an explicit sparse matrix.
-
-    The composed operator ``L_dg = div . grad`` maps scalar fields to
-    scalar fields.  At each vertex *i* the value ``(L_dg f)_i`` depends
-    only on ``f`` at *i* and its two-hop neighbourhood (edges of W^2),
-    so the resulting matrix is sparse.
-
-    This function assembles the matrix by expressing the linear map
-    directly in terms of the precomputed edge data, avoiding N separate
-    matvecs.  The result supports shift-invert ``eigsh`` and can be
-    passed to :func:`spectral_clustering_from_laplacian`.
-
-    The matrix is symmetrised as ``0.5 * (L + L^T)`` to enforce the
-    self-adjointness that holds in the continuous limit.
-
-    Args:
-        level:  BlowUpLevel.
-        W:      Sparse affinity matrix.
-        lam:    Tikhonov regularisation for gradient/divergence.
-
-    Returns:
-        Sparse (N, N) CSR matrix.
-    """
-    N, D, d = level.N, level.D, level.d
-    U = level.frame   # (N, D, d)
-    ec = _precompute_edges(level, W, lam)
-    rows_e, cols_e = ec["rows"], ec["cols"]
-    w_delta = ec["w_delta"]   # (E, d) — w_ij * delta_ij
-    S_inv = ec["S_inv"]       # (N, d, d)
-
-    # ── Gradient as a linear map on f ──
-    # (grad f)_i = U_i S_i^{-1} sum_j w_ij delta_ij (f_j - f_i)
-    #            = sum_j  G_ij f_j  -  (sum_j G_ij) f_i
-    # where G_ij = U_i S_i^{-1} (w_ij delta_ij)  is a (D,) vector per edge.
-    #
-    # ── Divergence applied to grad f ──
-    # (div X)_i = tr(S_i^{-1} R_i)
-    # R_i = sum_j w_ij delta_ij (U_i^T X_j - U_i^T X_i)^T
-    #
-    # Substituting X = grad f gives a linear operator on f.  Rather than
-    # expanding the full two-hop algebra symbolically, we assemble L column
-    # by column using the fast vectorised matvec.  With the bincount-based
-    # scatter this is ~1ms per column at N=3000.
-
-    # For moderate N, column-by-column assembly using the cached matvec is
-    # fast enough and avoids error-prone two-hop index arithmetic.
-    # Pre-allocate and fill.
-    L = np.zeros((N, N), dtype=float)
-    for j in range(N):
-        e_j = np.zeros(N, dtype=float)
-        e_j[j] = 1.0
-        grad_ej = lifted_gradient(level, e_j, W, lam=lam, _edge_cache=ec)
-        L[:, j] = lifted_divergence(level, grad_ej, W, lam=lam, _edge_cache=ec)
-
-    # Symmetrise (continuous operator is self-adjoint)
-    L = 0.5 * (L + L.T)
-    return sparse.csr_matrix(L)
-
-
 __all__ = [
+    # Weight configuration
+    "WeightConfig",
+    "product_weights",
     # Affinity builders
     "lifted_affinity",
-    "lifted_gaussian_affinity",
     "product_affinity",
     # Laplacian
     "affinity_to_laplacian",
@@ -820,6 +664,4 @@ __all__ = [
     # Gradient / Divergence
     "lifted_gradient",
     "lifted_divergence",
-    "div_grad_operator",
-    "div_grad_laplacian",
 ]

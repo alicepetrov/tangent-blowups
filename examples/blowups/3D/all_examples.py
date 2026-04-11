@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from tangent_blowups.geometry.grassmann import BlownUpSample
+from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.solvers.linalg import normalize_vectors
 from tangent_blowups.testsupport import (
     Sample,
@@ -114,7 +114,7 @@ def _set_axes_equal_3d(ax, points: np.ndarray):
 
 
 def visualize_embedding_components(
-    sample: BlownUpSample,
+    sample: BlowUpLevel,
     *,
     alpha: float = 1.0,
     downsample: int = 1,
@@ -123,12 +123,12 @@ def visualize_embedding_components(
     """
     Visualize the Nash embedding by coloring the 3D cloud with each component.
 
-    Uses BlownUpSample.embedding_vector(alpha=...), which returns:
+    Uses BlowUpLevel.embedding_vector(alpha=...), which returns:
         [x, y, z, sqrt(alpha/2) * P00, ..., sqrt(alpha/2) * P22]
     """
-    pts = sample.spatial[::downsample]
+    pts = sample.embedded[::downsample]
     embed = sample.embedding_vector(alpha=alpha)[::downsample]
-    n = sample.n
+    n = sample.n_orig
 
     if n == 3:
         base_labels = ["x", "y", "z"]
@@ -169,7 +169,7 @@ def _lift_and_plot_curve(label: str, sample_in: Sample):
     points = np.asarray(sample_in.points, dtype=float)
     tangents = normalize_vectors(np.asarray(sample_in.tangents, dtype=float))
 
-    lifted = BlownUpSample.from_tangents(points, tangents)
+    lifted = BlowUpLevel.from_point_tangents(points, tangents)
     visualize_quiver(lifted, scale=0.2, downsample=12)
     visualize_components(lifted, components="all", downsample=4)
     visualize_embedding_components(lifted, alpha=1.0, downsample=4, cols=4)
@@ -180,7 +180,7 @@ def _lift_and_plot_surface(label: str, sample_in: Sample):
     points = np.asarray(sample_in.points, dtype=float)
     normals = normalize_vectors(np.asarray(sample_in.normals, dtype=float))
 
-    lifted = BlownUpSample.from_normals(points, normals)
+    lifted = BlowUpLevel.from_normals(points, normals)
     visualize_quiver(lifted, scale=0.2, downsample=12)
     visualize_components(lifted, components="all", downsample=4)
     visualize_embedding_components(lifted, alpha=1.0, downsample=4, cols=4)

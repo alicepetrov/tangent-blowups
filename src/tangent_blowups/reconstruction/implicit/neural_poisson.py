@@ -354,7 +354,7 @@ class NeuralPoissonReconstructor:
     Typical usage::
 
         level0 = BlowUpLevel.from_point_tangents(points, tangents)
-        level1 = level0.lift(k=16, alpha=1.0)
+        level1 = level0.lift(k=20, alpha=1.0)
 
         recon = NeuralPoissonReconstructor(level1)
         recon.fit()

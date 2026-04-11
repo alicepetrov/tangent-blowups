@@ -25,7 +25,6 @@ from tangent_blowups.testsupport import (
     RandomSurface, sample,
     plane_cross, cylinders_tangent, plane_paraboloid_tangent,
 )
-from tangent_blowups.geometry.grassmann import BlownUpSample
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.geometry.kernels import lifted_laplacian
 from tangent_blowups.pointcloud.laplacian import (
@@ -80,7 +79,7 @@ def _level0_from_thingi(name: str):
         idx = rng.choice(len(pts), N_REAL, replace=False)
         pts, nrm = pts[idx], nrm[idx]
 
-    frames = BlownUpSample.from_normals(pts, nrm).dualize().basis
+    frames = BlowUpLevel.from_normals(pts, nrm).frame
     return pts, BlowUpLevel.from_point_tangents(pts, frames)
 
 

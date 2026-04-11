@@ -11,7 +11,7 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
-from tangent_blowups.geometry.grassmann import BlownUpSample
+from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.solvers.linalg import normalize_vectors
 from tangent_blowups.testsupport import UniformCurve, figure8, sample
 
@@ -54,9 +54,9 @@ def _scatter(ax, pts, values, *, cmap, vmin=None, vmax=None, s=9):
 
 def main():
     points, tangents = build_oriented_fig8(n=1200, scale=2.0, seed=7)
-    lifted = BlownUpSample.from_tangents(points, tangents)
+    lifted = BlowUpLevel.from_point_tangents(points, tangents)
 
-    pts = lifted.spatial
+    pts = lifted.embedded
     P = lifted.projectors  # (N, 2, 2)
 
     # -- Publication styling --
@@ -106,7 +106,7 @@ def main():
     plt.show()
 
     # ---- kNN comparison: ambient vs lifted near the intersection ----
-    query_idx, idx_amb, dist_amb, idx_lift, dist_lift = _find_knn(lifted, k=200, alpha=2.0)
+    query_idx, idx_amb, dist_amb, idx_lift, dist_lift = _find_knn(lifted, k=200, alpha=1.0)
 
     # Plot 2: standalone kNN comparison
     _plot_knn_comparison(pts, query_idx, idx_amb, dist_amb, idx_lift, dist_lift, s=9)
@@ -115,11 +115,11 @@ def main():
     _plot_combined(pts, P, query_idx, idx_amb, dist_amb, idx_lift, dist_lift, cmap=cmap, s=9)
 
 
-def _find_knn(lifted: BlownUpSample, *, k: int = 80, alpha: float = 1.0):
+def _find_knn(lifted: BlowUpLevel, *, k: int = 80, alpha: float = 1.0):
     """Find kNN indices near the self-intersection in ambient and lifted space."""
-    from scipy.spatial import cKDTree
+    from scipy.embedded import cKDTree
 
-    pts = lifted.spatial
+    pts = lifted.embedded
     embed = lifted.embedding_vector(alpha=alpha)
 
     query_idx = int(np.argmin(np.linalg.norm(pts, axis=1)))

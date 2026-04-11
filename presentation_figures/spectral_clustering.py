@@ -26,7 +26,6 @@ from tangent_blowups.testsupport import (
     RandomSurface, sample,
     plane_cross, cylinders_tangent, plane_paraboloid_tangent,
 )
-from tangent_blowups.geometry.grassmann import BlownUpSample
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.geometry.kernels import lifted_laplacian
 from tangent_blowups.clustering import spectral_embedding_from_laplacian
@@ -183,7 +182,7 @@ def _level0_from_thingi(name: str) -> tuple[np.ndarray, BlowUpLevel]:
         idx = rng.choice(len(pts), N_REAL, replace=False)
         pts, nrm = pts[idx], nrm[idx]
 
-    frames = BlownUpSample.from_normals(pts, nrm).dualize().basis  # (N, 3, 2)
+    frames = BlowUpLevel.from_normals(pts, nrm).frame  # (N, 3, 2)
     return pts, BlowUpLevel.from_point_tangents(pts, frames)
 
 

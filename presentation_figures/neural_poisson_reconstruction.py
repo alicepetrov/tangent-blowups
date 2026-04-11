@@ -89,7 +89,7 @@ def make_figure8():
 
     # Lift
     level0 = BlowUpLevel.from_point_tangents(points_noisy, tangents)
-    level1 = level0.lift(k=16, alpha=1.0)
+    level1 = level0.lift(k=20, alpha=1.0)
 
     # Train
     config = PoissonConfig(
@@ -200,7 +200,7 @@ def make_whitney():
 
     # Lift
     level0 = BlowUpLevel.from_point_tangents(points_noisy, tangents)
-    level1 = level0.lift(k=16, alpha=1.0)
+    level1 = level0.lift(k=20, alpha=1.0)
 
     # Train
     config = PoissonConfig(

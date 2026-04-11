@@ -8,7 +8,8 @@ import matplotlib.pyplot as plt
 
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-from tangent_blowups.io.load import load_stl, read_stl
+from tangent_blowups.io.adapters import stl_mesh_to_oriented_point_cloud
+from tangent_blowups.io.load import load_mesh, read_mesh
 from tangent_blowups.io.save import save_pointcloud
 from tangent_blowups.testsupport.geom_types import Sample
 
@@ -169,19 +170,28 @@ def _plot_mesh(
     plt.show()
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
 def _default_stl_path() -> Path:
-    repo_root = Path(__file__).resolve().parents[2]
-    return repo_root / "data" / "thingi10k" / "snowflake.stl"
+    return _repo_root() / "data" / "thingi10k" / "snowflake.stl"
 
 
 def _default_thingi10k_root() -> Path:
-    repo_root = Path(__file__).resolve().parents[2]
-    return repo_root / "data" / "thingi10k"
+    return _repo_root() / "data" / "thingi10k"
 
 
 def _default_thingi10k_output() -> Path:
-    repo_root = Path(__file__).resolve().parents[2]
-    return repo_root / "data" / "thingi10k_pointcloud"
+    return _repo_root() / "data" / "thingi10k_pointcloud"
+
+
+def _default_threedscans_root() -> Path:
+    return _repo_root() / "data" / "threedscans"
+
+
+def _default_threedscans_output() -> Path:
+    return _repo_root() / "data" / "threedscans_pointcloud"
 
 
 def _subset_params(params: np.ndarray | tuple[np.ndarray, ...], idx: np.ndarray):
@@ -233,31 +243,49 @@ def _downsample_sample(
     )
 
 
-def _batch_convert_thingi10k(
+def _batch_convert(
     *,
     input_root: Path,
     output_root: Path,
+    extensions: list[str],
     sample_mode: str,
     samples_per_face: int,
     merge_vertices: bool,
     max_points: int | None,
     downsample_seed: int | None,
 ) -> None:
-    stl_files = sorted(input_root.glob("*.stl"))
-    if not stl_files:
-        raise FileNotFoundError(f"No STL files found in {input_root}")
+    mesh_files: list[Path] = []
+    for ext in extensions:
+        mesh_files.extend(input_root.glob(f"*{ext}"))
+    mesh_files.sort(key=lambda p: p.name)
+
+    if not mesh_files:
+        exts = ", ".join(extensions)
+        raise FileNotFoundError(f"No mesh files ({exts}) found in {input_root}")
 
     output_root.mkdir(parents=True, exist_ok=True)
-    total = len(stl_files)
-    print(f"Found {total} STL files in {input_root}")
+    total = len(mesh_files)
+    print(f"Found {total} mesh files in {input_root}")
     rng = np.random.default_rng(downsample_seed)
 
-    for idx, stl_path in enumerate(stl_files, start=1):
+    for idx, mesh_path in enumerate(mesh_files, start=1):
         try:
-            sample = load_stl(
-                stl_path,
-                sample_mode=sample_mode,
-                samples_per_face=samples_per_face,
+            triangles, face_normals = read_mesh(mesh_path)
+            n_faces = triangles.shape[0]
+            spf = samples_per_face
+            mode = sample_mode
+            if max_points is not None and n_faces * spf > max_points * 4:
+                # Cap allocation: no point generating far more samples than
+                # we'll keep after downsampling.  Use a 4× oversampling margin
+                # so the uniform distribution stays reasonable.
+                spf = max(1, (max_points * 4) // n_faces)
+                if spf == 1 and n_faces >= max_points:
+                    mode = "vertices"
+            sample = stl_mesh_to_oriented_point_cloud(
+                triangles,
+                face_normals,
+                sample_mode=mode,
+                samples_per_face=spf,
                 merge_vertices=merge_vertices,
             )
             sample, downsampled = _downsample_sample(
@@ -265,10 +293,10 @@ def _batch_convert_thingi10k(
                 max_points=max_points,
                 rng=rng,
             )
-            save_path = output_root / f"{stl_path.stem}.npz"
+            save_path = output_root / f"{mesh_path.stem}.npz"
             save_pointcloud(save_path, sample=sample)
         except Exception as exc:
-            print(f"[{idx}/{total}] Failed {stl_path.name}: {exc}")
+            print(f"[{idx}/{total}] Failed {mesh_path.name}: {exc}")
             continue
 
         if idx == 1 or idx == total or idx % 100 == 0:
@@ -283,13 +311,19 @@ def _batch_convert_thingi10k(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Convert an STL mesh to a point cloud and plot it."
+        description="Convert a mesh (STL/OBJ) to a point cloud and plot it."
+    )
+    parser.add_argument(
+        "--mesh",
+        type=Path,
+        default=None,
+        help="Path to mesh file (.stl or .obj).",
     )
     parser.add_argument(
         "--stl",
         type=Path,
-        default=_default_stl_path(),
-        help="Path to STL mesh.",
+        default=None,
+        help="Path to STL mesh (alias for --mesh, kept for backwards compat).",
     )
     parser.add_argument(
         "--samples-per-face",
@@ -313,6 +347,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--batch-threedscans",
+        action="store_true",
+        help=(
+            "Process all OBJ files in data/threedscans and save point clouds to "
+            "data/threedscans_pointcloud."
+        ),
+    )
+    parser.add_argument(
         "--merge-vertices",
         action="store_true",
         help="Merge duplicate vertices (only applies to vertex sampling).",
@@ -320,7 +362,7 @@ def main() -> None:
     parser.add_argument(
         "--max-points",
         type=int,
-        default=100000,
+        default=200000,
         help="If set, downsample point clouds to at most this many points (e.g. 25000).",
     )
     parser.add_argument(
@@ -337,21 +379,36 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    batch_kwargs = dict(
+        sample_mode=args.sample_mode,
+        samples_per_face=args.samples_per_face,
+        merge_vertices=args.merge_vertices,
+        max_points=args.max_points,
+        downsample_seed=args.downsample_seed,
+    )
+
     if args.batch_thingi10k:
-        _batch_convert_thingi10k(
+        _batch_convert(
             input_root=_default_thingi10k_root(),
             output_root=_default_thingi10k_output(),
-            sample_mode=args.sample_mode,
-            samples_per_face=args.samples_per_face,
-            merge_vertices=args.merge_vertices,
-            max_points=args.max_points,
-            downsample_seed=args.downsample_seed,
+            extensions=[".stl"],
+            **batch_kwargs,
         )
         return
 
-    triangles, _ = read_stl(args.stl)
-    sample = load_stl(
-        args.stl,
+    if args.batch_threedscans:
+        _batch_convert(
+            input_root=_default_threedscans_root(),
+            output_root=_default_threedscans_output(),
+            extensions=[".obj"],
+            **batch_kwargs,
+        )
+        return
+
+    mesh_path = args.mesh or args.stl or _default_stl_path()
+    triangles, _ = read_mesh(mesh_path)
+    sample = load_mesh(
+        mesh_path,
         sample_mode=args.sample_mode,
         samples_per_face=args.samples_per_face,
         merge_vertices=args.merge_vertices,
@@ -366,7 +423,7 @@ def main() -> None:
     points = np.asarray(sample.points, dtype=float)
     normals = np.asarray(sample.normals, dtype=float)
 
-    print(f"Loaded {points.shape[0]} points from {args.stl}")
+    print(f"Loaded {points.shape[0]} points from {mesh_path}")
     if downsampled is not None and downsampled[0] != downsampled[1]:
         print(f"Downsampled {downsampled[0]} -> {downsampled[1]} points")
 

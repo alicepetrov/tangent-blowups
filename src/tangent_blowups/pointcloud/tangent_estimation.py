@@ -149,7 +149,7 @@ def _update_sample(
 def estimate_normals_pca(
     points_or_sample: np.ndarray | Sample,
     *,
-    k: int | None = 16,
+    k: int | None = 20,
     radius: float | None = None,
     center: Literal["mean", "point"] = "mean",
     include_self: bool = True,
@@ -179,7 +179,7 @@ def estimate_normals_pca(
 def estimate_tangents_pca(
     points_or_sample: np.ndarray | Sample,
     *,
-    k: int | None = 16,
+    k: int | None = 20,
     radius: float | None = None,
     tangent_dim: int | None = None,
     center: Literal["mean", "point"] = "mean",
@@ -221,7 +221,7 @@ def estimate_tangents_pca(
 def estimate_normals_and_tangents_pca(
     points_or_sample: np.ndarray | Sample,
     *,
-    k: int | None = 16,
+    k: int | None = 20,
     radius: float | None = None,
     tangent_dim: int | None = None,
     center: Literal["mean", "point"] = "mean",

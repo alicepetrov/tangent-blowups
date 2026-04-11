@@ -16,7 +16,7 @@ from scipy.sparse import linalg as spla
 from scipy.sparse.linalg import ArpackNoConvergence
 
 from .neighbors import knn_edges, radius_edges
-from ..geometry.grassmann import BlownUpSample
+from ..geometry.iterated_grassmann import BlowUpLevel
 
 LaplacianReturn = (
     sparse.csr_matrix
@@ -137,7 +137,7 @@ def _laplacian_from_weight(
 def pointcloud_laplacian(
     points: np.ndarray,
     *,
-    k: int | None = 16,
+    k: int | None = 20,
     radius: float | None = None,
     h: float | Literal["local"] | None = "local",
     symmetrize: bool = True,
@@ -205,7 +205,7 @@ def bilateral_pointcloud_laplacian(
     points: np.ndarray,
     normals: np.ndarray,
     *,
-    k: int = 30,
+    k: int = 20,
     sigma_x: float | None = None,
     sigma_n: float | None = None,
     symmetrize: bool = True,
@@ -289,16 +289,16 @@ def bilateral_pointcloud_laplacian(
 
 
 def _coerce_blown_up(
-    points_or_sample: np.ndarray | BlownUpSample,
+    points_or_sample: np.ndarray | BlowUpLevel,
     subspace_basis: np.ndarray | None,
-) -> BlownUpSample:
-    if isinstance(points_or_sample, BlownUpSample):
+) -> BlowUpLevel:
+    if isinstance(points_or_sample, BlowUpLevel):
         if subspace_basis is not None:
-            raise ValueError("subspace_basis must be None when passing BlownUpSample.")
+            raise ValueError("subspace_basis must be None when passing BlowUpLevel.")
         return points_or_sample
     if subspace_basis is None:
         raise ValueError("subspace_basis is required when passing raw points.")
-    return BlownUpSample(points_or_sample, subspace_basis)
+    return BlowUpLevel.from_point_tangents(points_or_sample, subspace_basis)
 
 
 def _edges_from_distance_matrix(
@@ -372,10 +372,10 @@ def _edges_from_distance_matrix(
 
 
 def lifted_pointcloud_laplacian(
-    points_or_sample: np.ndarray | BlownUpSample,
+    points_or_sample: np.ndarray | BlowUpLevel,
     subspace_basis: np.ndarray | None = None,
     *,
-    k: int | None = 16,
+    k: int | None = 20,
     radius: float | None = None,
     h: float | Literal["local"] | None = "local",
     alpha: float = 1.0,
@@ -394,7 +394,7 @@ def lifted_pointcloud_laplacian(
         d^2 = ||x_i - x_j||^2 + alpha * d_subspace(U_i, U_j)^2
 
     Args:
-        points_or_sample: (N, n) points or a BlownUpSample.
+        points_or_sample: (N, n) points or a BlowUpLevel.
         subspace_basis: (N, n, k) basis data if points_or_sample is raw points.
         k: number of nearest neighbors (ignored if radius is provided).
         radius: neighborhood radius for radius graph (overrides k).

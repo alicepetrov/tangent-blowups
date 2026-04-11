@@ -1,8 +1,8 @@
 """
 Lifted Kernels on 2D Curves: Transverse vs Tangential Intersections
 --------------------------------------------------------------------
-Demonstrates the three lifted kernel families — self-tuning (Zelnik-Manor),
-fixed Gaussian, and product — on two canonical two-component curve examples.
+Demonstrates the two lifted kernel families — product and self-tuning
+(Zelnik-Manor) — on two canonical two-component curve examples.
 The key comparison is between levels: which blow-up level first provides
 enough geometric information for the graph Laplacian to metrically separate
 the two components?
@@ -30,7 +30,6 @@ B. **Line + Parabola** (tangential intersection at origin):
       Level 0, self-tuning : merged (same position)
       Level 1, self-tuning : merged (same tangent)
       Level 2, self-tuning : separated (different curvature in metric)
-      Level 2, gaussian    : same, fixed bandwidth
       Level 2, product     : same, independent spatial + angular bandwidths
 
 Figures
@@ -38,8 +37,7 @@ Figures
 Fig 1 — Transverse (figure-8): Fiedler vector & eigenvalue spectrum,
         three kernels / levels.
 Fig 2 — Tangential (line+parabola) level-by-level: levels 0, 1, 2.
-Fig 3 — Kernel comparison at level 2 (tangential): self-tuning vs
-        Gaussian vs product.
+Fig 3 — Kernel comparison at level 2 (tangential): self-tuning vs product.
 
 In each top row the **Fiedler vector** (first non-trivial eigenvector of the
 graph Laplacian, coloured on the original 2D curve) shows whether the two
@@ -177,15 +175,11 @@ def _build_L(level: BlowUpLevel, kernel: str) -> tuple:
 
     Bandwidth selection:
       self_tuning : h = "local"  (Zelnik-Manor pointwise)
-      gaussian    : sigma = median k-NN distance in level.embedded
       product     : sigma_x = median k-NN distance in original positions,
                     sigma_u = median Frobenius projector dist over k-NN pairs
     """
     if kernel == "self_tuning":
         return lifted_laplacian(level, kernel="self_tuning", k=K_KERNEL, h="local")
-    if kernel == "gaussian":
-        sigma = _median_embed_dist(level)
-        return lifted_laplacian(level, kernel="gaussian", k=K_KERNEL, sigma=sigma)
     if kernel == "product":
         sigma_x = _median_spatial_dist(level)
         sigma_u = _median_proj_dist(level)
@@ -382,20 +376,13 @@ def main():
     print(f"   (F) Level 2 self-tuning :  cross frac = {cf_F:.2%},  "
           f"Fiedler gap = {ev_F[1]-ev_F[0]:.5f}")
 
-    # (G) Level 2, fixed Gaussian: sigma = median k-NN distance in level2.embedded
-    L_G, W_G, _ = _build_L(l2, "gaussian")
+    # (G) Level 2, product: k-NN in level2.embedded, but separate spatial (σ_x)
+    #     and angular (σ_u) bandwidths for the level-2 tangent projectors.
+    L_G, W_G, _ = _build_L(l2, "product")
     ev_G, fv_G  = _spectrum(L_G)
     cf_G        = _cross_frac(W_G, gt_lp)
-    print(f"   (G) Level 2 gaussian    :  cross frac = {cf_G:.2%},  "
+    print(f"   (G) Level 2 product     :  cross frac = {cf_G:.2%},  "
           f"Fiedler gap = {ev_G[1]-ev_G[0]:.5f}")
-
-    # (H) Level 2, product: k-NN in level2.embedded, but separate spatial (σ_x)
-    #     and angular (σ_u) bandwidths for the level-2 tangent projectors.
-    L_H, W_H, _ = _build_L(l2, "product")
-    ev_H, fv_H  = _spectrum(L_H)
-    cf_H        = _cross_frac(W_H, gt_lp)
-    print(f"   (H) Level 2 product     :  cross frac = {cf_H:.2%},  "
-          f"Fiedler gap = {ev_H[1]-ev_H[0]:.5f}")
 
     # ===================================================================
     # Figure 1: Transverse — kernel comparison
@@ -463,12 +450,8 @@ def main():
             ev_F, fv_F, cf_F,
         ),
         (
-            "Level 2 — Gaussian\n(fixed σ = median k-NN dist)\nuniform scale, PD kernel",
-            ev_G, fv_G, cf_G,
-        ),
-        (
             "Level 2 — product\n(σ_x spatial, σ_u angular)\nindependent bandwidths, PD kernel",
-            ev_H, fv_H, cf_H,
+            ev_G, fv_G, cf_G,
         ),
     ]
     _make_figure(

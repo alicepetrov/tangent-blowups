@@ -134,8 +134,8 @@ def _print_cluster_sizes(label, labels):
 def main() -> None:
     n_clusters       = 2       # 2 fault planes
     k                = 20
-    alpha            = 30.0
-    lam              = 1e-3
+    alpha            = 1.0
+    lam = 0.0
     sigma_x          = 8000.0  # spatial bandwidth (~1.5x median k-NN dist)
     sigma_u          = 0.05     # angular bandwidth (same-plane ~0.02 -> w≈1, cross-plane ~1.4 -> w≈0)
     normalized       = True

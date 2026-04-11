@@ -1,14 +1,15 @@
 """
-Thingi10k Geodesic Comparison
------------------------------
-Side-by-side comparison of geodesic distances:
+Geodesic Comparison on Point Clouds
+------------------------------------
+Side-by-side comparison of geodesic distances on point clouds
+(Thingi10K, 3D-Scans, or any .npz point cloud):
 
 1. **Lifted** (ours) -- product-kernel heat method on the level-1 blow-up
 2. **Robust** -- nonmanifold Laplacian from the ``robust_laplacian`` library
 
 Usage:
     python thingi10k.py -p ship --rotate y
-    python thingi10k.py -p pan_pipes
+    python thingi10k.py -p Glykon
     python thingi10k.py                      # lists available point clouds
 """
 from __future__ import annotations
@@ -35,7 +36,8 @@ from tangent_blowups.solvers.linalg import normalize_vectors
 
 # -- Constants ---------------------------------------------------------------
 METHODS = ["lifted", "robust"]
-DATA_DIR = Path(__file__).resolve().parents[3] / "data" / "thingi10k_pointcloud"
+_DATA_ROOT = Path(__file__).resolve().parents[3] / "data"
+_POINTCLOUD_DIRS = ["thingi10k_pointcloud", "threedscans_pointcloud"]
 
 
 # -- Rotation ----------------------------------------------------------------
@@ -66,8 +68,28 @@ def _parse_rotation(spec: str) -> np.ndarray:
 
 
 # -- Data loading ------------------------------------------------------------
-def _available_pointclouds() -> list[str]:
-    return sorted(p.stem for p in DATA_DIR.glob("*.npz"))
+def _available_pointclouds() -> dict[str, Path]:
+    """Return {stem: path} for all available point clouds across datasets."""
+    result: dict[str, Path] = {}
+    for dirname in _POINTCLOUD_DIRS:
+        d = _DATA_ROOT / dirname
+        if d.is_dir():
+            for p in d.glob("*.npz"):
+                result[p.stem] = p
+    return dict(sorted(result.items()))
+
+
+def _resolve_pointcloud(name: str) -> Path:
+    """Resolve a point cloud name or path to an actual file."""
+    p = Path(name)
+    if p.suffix == ".npz" and p.exists():
+        return p
+    avail = _available_pointclouds()
+    if name in avail:
+        return avail[name]
+    raise FileNotFoundError(
+        f"Point cloud '{name}' not found. Available: {', '.join(avail)}"
+    )
 
 
 def _load_points_and_normals(
@@ -89,10 +111,12 @@ def _load_points_and_normals(
     return points[valid], normalize_vectors(normals[valid])
 
 
-def _build_level(points, normals, *, alpha, k):
+def _build_level(points, normals, *, alpha, k, n_lifts=1):
     frames = _normals_to_tangent_frames(normals)
-    level0 = BlowUpLevel.from_point_tangents(points, frames)
-    return level0.lift(alpha=alpha, k=k, lam=1e-3)
+    level = BlowUpLevel.from_point_tangents(points, frames)
+    for _ in range(n_lifts):
+        level = level.lift(alpha=alpha, k=k)
+    return level
 
 
 # -- Generic heat method for arbitrary (L, M, W) ----------------------------
@@ -131,7 +155,7 @@ def _estimate_mass_pts(points, W, d_manifold=2):
     return mass
 
 
-def _edge_gradient(points, f, W, lam=1e-3):
+def _edge_gradient(points, f, W, lam=0.0):
     """Weighted least-squares gradient in R^3 from a k-NN graph."""
     N, n = points.shape
     coo = W.tocoo()
@@ -200,9 +224,10 @@ def generic_heat_method(
     N = len(points)
     src = np.atleast_1d(np.asarray(source_index, dtype=int))
 
-    M_diag = np.asarray(M.diagonal()).ravel() if sparse.issparse(M) else np.diag(M)
+    # Crane et al. 2013 / geometry-central: RHS is the indicator vector
+    # e_i (Dirac delta as FEM functional).
     rhs = np.zeros(N)
-    rhs[src] = 1.0 / M_diag[src]
+    rhs[src] = 1.0
 
     t = _estimate_time_step_pts(points, W, t_scale)
 
@@ -235,13 +260,14 @@ def _dist_to_colors(dist, u, n_points, n_bands=15):
         dist_reach = np.minimum(dist_reach, p99)
 
     cmap = colormaps["magma"]
+    far_color = np.array(cmap(1.0)[:3])  # pale yellow at the end of the colormap
     dmax = float(dist_reach.max()) if dist_reach.size > 0 and dist_reach.max() > 0 else 1.0
 
-    smooth = np.full((n_points, 3), 0.7)
+    smooth = np.tile(far_color, (n_points, 1))
     if dist_reach.size > 0:
         smooth[mask] = cmap(dist_reach / dmax)[:, :3]
 
-    bands = np.full((n_points, 3), 0.7)
+    bands = np.tile(far_color, (n_points, 1))
     if dist_reach.size > 0:
         bw = dmax / n_bands
         b = np.clip(np.floor(dist_reach / bw).astype(int), 0, n_bands - 1)
@@ -321,43 +347,63 @@ def _compute_and_display(
 
 # -- Main --------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="Thingi10k geodesic comparison")
+    parser = argparse.ArgumentParser(description="Geodesic comparison on point clouds")
     parser.add_argument(
         "--pointcloud", "-p", type=str, default=None,
-        help="Name of the point cloud (without .npz extension)",
+        help="Name or path of the point cloud (.npz). Omit to list available.",
     )
-    parser.add_argument("--k", type=int, default=30)
+    parser.add_argument("--k", type=int, default=20)
     parser.add_argument("--alpha", type=float, default=1.0)
+    parser.add_argument("--n-lifts", type=int, default=1, choices=[1, 2],
+                        help="Number of blow-up levels (1 or 2).")
     parser.add_argument("--sigma-x", type=float, default=0.5)
     parser.add_argument("--sigma-u", type=float, default=0.5)
-    parser.add_argument("--t-scale", type=float, default=50.0)
+    parser.add_argument("--t-scale-lifted", type=float, default=1.0,
+                        help="Time-scale multiplier for the lifted method.")
+    parser.add_argument("--t-scale-robust", type=float, default=5.0,
+                        help="Time-scale multiplier for the robust method.")
     parser.add_argument(
         "--rotate", "-r", type=str, default=None,
         help="Rotation: 'x', 'y', or 'ANGLE,AX,AY,AZ'",
     )
+    parser.add_argument(
+        "--max-points", type=int, default=None,
+        help="If set, uniformly downsample to at most this many points.",
+    )
+    parser.add_argument(
+        "--downsample-seed", type=int, default=None,
+        help="Optional RNG seed for downsampling.",
+    )
     args = parser.parse_args()
 
-    available = _available_pointclouds()
     if args.pointcloud is None:
+        avail = _available_pointclouds()
+        if not avail:
+            print("No point clouds found. Run mesh_to_pc.py first.")
+            return
         print("Available point clouds:")
-        for name in available:
-            print(f"  {name}")
+        for name, path in avail.items():
+            print(f"  {name}  ({path.parent.name})")
         print("\nUsage: python thingi10k.py --pointcloud <name>")
         return
 
-    if args.pointcloud not in available:
-        print(f"Unknown: {args.pointcloud!r}. Available: {', '.join(available)}")
-        return
-
-    data_path = DATA_DIR / f"{args.pointcloud}.npz"
+    data_path = _resolve_pointcloud(args.pointcloud)
     k = args.k
     alpha = args.alpha
-    t_scale = args.t_scale
     sigma_x = args.sigma_x
     sigma_u = args.sigma_u
 
     points, normals = _load_points_and_normals(data_path)
-    print(f"Loaded {points.shape[0]} points from {data_path.name}")
+    n_original = points.shape[0]
+    print(f"Loaded {n_original} points from {data_path.name}")
+
+    if args.max_points is not None and args.max_points > 0 and n_original > args.max_points:
+        rng = np.random.default_rng(args.downsample_seed)
+        idx = rng.choice(n_original, size=args.max_points, replace=False)
+        idx.sort()
+        points = points[idx]
+        normals = normals[idx]
+        print(f"Downsampled {n_original} -> {len(points)} points")
 
     if args.rotate is not None:
         R = _parse_rotation(args.rotate)
@@ -365,8 +411,9 @@ def main():
         normals = normals @ R.T
         print(f"Applied rotation: --rotate {args.rotate}")
 
-    level = _build_level(points, normals, alpha=alpha, k=k)
-    print(f"Built level-1 BlowUpLevel: N={level.N}, D={level.D}, d={level.d}")
+    n_lifts = args.n_lifts
+    level = _build_level(points, normals, alpha=alpha, k=k, n_lifts=n_lifts)
+    print(f"Built level-{n_lifts} BlowUpLevel: N={level.N}, D={level.D}, d={level.d}")
 
     # Spacing between copies
     bbox_x = points[:, 0].max() - points[:, 0].min()
@@ -383,6 +430,11 @@ def main():
         "source_index": None,
         "computing": False,
         "show_bands": False,
+        "t_scale_lifted": args.t_scale_lifted,
+        "t_scale_robust": args.t_scale_robust,
+        "alpha": alpha,
+        "n_lifts": n_lifts,
+        "level": level,
     }
     for m in METHODS:
         state[f"{m}_smooth"] = None
@@ -402,6 +454,26 @@ def main():
         elif state["source_index"] is not None:
             idx = state["source_index"]
             psim.TextUnformatted(f"Source: {idx}  ({points[idx].round(2)})")
+
+        # Per-method time-scale inputs
+        _, state["t_scale_lifted"] = psim.InputFloat(
+            "t_scale (lifted)", state["t_scale_lifted"],
+        )
+        _, state["t_scale_robust"] = psim.InputFloat(
+            "t_scale (robust)", state["t_scale_robust"],
+        )
+
+        # Alpha and lift level (require rebuilding)
+        _, state["alpha"] = psim.InputFloat("alpha", state["alpha"])
+        _, state["n_lifts"] = psim.InputInt("n_lifts", state["n_lifts"])
+        state["n_lifts"] = max(1, min(state["n_lifts"], 2))
+        if psim.Button("Rebuild level"):
+            nl = state["n_lifts"]
+            print(f"Rebuilding level-{nl} BlowUpLevel with alpha={state['alpha']:.3f}...")
+            state["level"] = _build_level(
+                points, normals, alpha=state["alpha"], k=k, n_lifts=nl,
+            )
+            print(f"Done: N={state['level'].N}, D={state['level'].D}")
 
         if have:
             if psim.Button("Compute geodesics"):
@@ -429,9 +501,10 @@ def main():
             print(f"Computing geodesics from point {idx}...")
             for m in METHODS:
                 _compute_and_display(
-                    m, level, points, idx, state,
+                    m, state["level"], points, idx, state,
                     k=k, sigma_x=sigma_x, sigma_u=sigma_u,
-                    t_scale=t_scale, method_points=method_points,
+                    t_scale=state[f"t_scale_{m}"],
+                    method_points=method_points,
                 )
 
     # -- Polyscope setup --

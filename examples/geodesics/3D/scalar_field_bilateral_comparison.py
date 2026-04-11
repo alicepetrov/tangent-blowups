@@ -303,7 +303,7 @@ def _estimate_mass_pts(points, W, d_manifold=2):
     return mass
 
 
-def _edge_gradient_pts(points, f, W, lam=1e-3):
+def _edge_gradient_pts(points, f, W, lam=0.0):
     N, n = points.shape
     coo = W.tocoo()
     rows, cols = coo.row, coo.col
@@ -392,7 +392,7 @@ def bilateral_heat_method(
     normals: np.ndarray,
     source_index: int,
     *,
-    k: int = 30,
+    k: int = 20,
     sigma_x: float = 0.5,
     sigma_n: float = 0.5,
     t_scale: float = 20.0,
@@ -418,7 +418,7 @@ def robust_heat_method(
     points: np.ndarray,
     source_index: int,
     *,
-    k: int = 30,
+    k: int = 20,
     t_scale: float = 20.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Heat-method geodesics using the robust_laplacian library."""
@@ -452,7 +452,7 @@ def _build_level(
 ) -> BlowUpLevel:
     frames = _normals_to_tangent_frames(normals)
     level0 = BlowUpLevel.from_point_tangents(points, frames)
-    return level0.lift(alpha=alpha, k=k, lam=1e-3)
+    return level0.lift(alpha=alpha, k=k, lam=0.0)
 
 
 # ---------------------------------------------------------------------------

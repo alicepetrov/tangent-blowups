@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # Registers 3D projection
 from typing import Optional, Union, Tuple
 
-from ..geometry.grassmann import BlownUpSample
+from ..geometry.iterated_grassmann import BlowUpLevel
 
 def _setup_figure(spatial_dim: int, n_subplots: int = 1, cols: int = 3, figsize_base: int = 4):
     """
@@ -57,7 +57,7 @@ def _plot_cloud(ax, points: np.ndarray, color_vals: np.ndarray, title: str, s: f
     return sc
 
 def visualize_components(
-    sample: BlownUpSample,
+    sample: BlowUpLevel,
     components: Optional[Union[str, Tuple[int, int]]] = 'all',
     downsample: int = 1,
     shared_color_scale: bool = False,
@@ -69,11 +69,11 @@ def visualize_components(
     - (i, j): Plots a single view colored by P[i, j].
     - 'trace': Plots the trace (should be constant k, useful sanity check).
     """
-    points = sample.spatial[::downsample]
+    points = sample.embedded[::downsample]
     # Get (N, n, n) projectors
     P = sample.projectors[::downsample]
     
-    n = sample.n
+    n = sample.n_orig
     
     # Mode 1: Plot Specific Component
     if isinstance(components, tuple):
@@ -124,20 +124,20 @@ def visualize_components(
         plt.show()
         return
 
-def visualize_quiver(sample: BlownUpSample, 
+def visualize_quiver(sample: BlowUpLevel, 
                      scale: float = 0.1, 
                      downsample: int = 10):
     """
     Visualizes the lift as vectors (arrows) attached to the points.
     Only works if the lift represents 1D lines (tangents or normals, k=1).
     """
-    if sample.k != 1:
-        print(f"Quiver plot only supports k=1 (vectors). Current k={sample.k}.")
+    if sample.d != 1:
+        print(f"Quiver plot only supports k=1 (vectors). Current k={sample.d}.")
         return
 
-    points = sample.spatial[::downsample]
+    points = sample.embedded[::downsample]
     # tangents: (N, n, 1) -> squeeze to (N, n)
-    vectors = sample.basis[::downsample].squeeze(-1)
+    vectors = sample.frame[::downsample].squeeze(-1)
     
     spatial_dim = points.shape[1]
     
@@ -154,5 +154,5 @@ def visualize_quiver(sample: BlownUpSample,
                   scale=1.0/scale, scale_units='xy')
         ax.set_aspect('equal')
         
-    ax.set_title(f"Fiber Bundle Visualization (Quiver k={sample.k})")
+    ax.set_title(f"Fiber Bundle Visualization (Quiver k={sample.d})")
     plt.show()

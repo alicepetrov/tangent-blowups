@@ -65,7 +65,7 @@ HALF_ANGLE = 0.55    # azimuthal sampling window (radians ~31 deg)
 
 N_POINTS   = 5000    # total sample points (1200 per cylinder)
 K_BLOWUP   = 20      # k-NN for blow-up curvature regression
-ALPHA      = 2.0     # Chordal-Sasaki weight
+ALPHA  = 1.0  # Chordal-Sasaki weight
 LAM        = 1e-3    # ridge regularisation
 SEED       = 42
 

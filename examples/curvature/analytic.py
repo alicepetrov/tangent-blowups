@@ -9,8 +9,8 @@ Methods compared
 ----------------
 1. **Ground truth** — K and H² from the parametric fundamental forms.
 2. **Blow-up** (ours) — level-1 iterated tangent blow-up.
-3. **Jet fitting** (Cazals & Pouget 2003) — local polynomial fit.
-4. **CNC** (if ``cnc/cnc_{name}.txt`` exists) — external curvature data.
+3. **Jet fitting** (pre-computed, loaded from ``jet/`` folder).
+4. **CNC** (pre-computed, loaded from ``cnc/`` folder).
 
 Point-cloud files
 -----------------
@@ -25,7 +25,7 @@ Usage::
     python analytic.py                       # both surfaces
     python analytic.py -s whitney            # Whitney umbrella only
     python analytic.py -s klein              # Klein bottle only
-    python analytic.py --k-bu 25 --k-jet 25 # custom k-NN
+    python analytic.py --k-bu 25             # custom k-NN
 """
 from __future__ import annotations
 
@@ -37,7 +37,6 @@ import polyscope as ps
 import polyscope.imgui as psim
 
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel, extract_level1
-from tangent_blowups.geometry.jet_fitting import jet_curvature
 from tangent_blowups.solvers.linalg import normalize_vectors
 
 
@@ -227,11 +226,11 @@ def _normals_to_frames(normals: np.ndarray) -> np.ndarray:
     return frames
 
 
-def _blowup_curvature(pts, normals, *, k=30, alpha=1.0, lam=1e-4):
+def _blowup_curvature(pts, normals, *, k=20, alpha=1.0, lam=0.0):
     """Returns dict with K, H2, total via level-1 blow-up."""
     frames = _normals_to_frames(normals)
     l0 = BlowUpLevel.from_point_tangents(pts, frames)
-    l1 = l0.lift(k=k, alpha=alpha, lam=lam, spatial_knn=True)
+    l1 = l0.lift(k=k, alpha=alpha, lam=lam)
     inv = extract_level1(l1)
     K = inv.gaussian_curvature
     Tc = inv.total_curvature[:, 0]
@@ -239,14 +238,17 @@ def _blowup_curvature(pts, normals, *, k=30, alpha=1.0, lam=1e-4):
     return {"K": K, "H2": H2, "total": Tc}
 
 
-def _jet_curvature_all(pts, normals, *, k=30, degree=3):
-    """Returns dict with K, H2, total via jet fitting."""
-    res = jet_curvature(pts, normals, k=k, degree=degree)
-    K = res["gaussian_curvature"]
-    k1, k2 = res["k1"], res["k2"]
-    H2 = np.nan_to_num((k1 + k2) ** 2 / 4.0, nan=0.0)
-    Tc = np.sqrt(np.nan_to_num(k1 ** 2 + k2 ** 2, nan=0.0))
-    return {"K": K, "H2": H2, "total": Tc}
+def _load_jet_curvature(name: str) -> dict[str, np.ndarray] | None:
+    """Load pre-computed jet-fitting curvatures from jet/ folder."""
+    jet_path = Path(__file__).parent / "jet" / f"jet_{name}.txt"
+    if not jet_path.exists():
+        return None
+    jet_data = np.loadtxt(jet_path)
+    K = jet_data[:, 0]
+    H = jet_data[:, 1]
+    H2 = H**2
+    total = np.sqrt(np.maximum(4.0 * H2 - 2.0 * K, 0.0))
+    return {"K": K, "H2": H2, "total": total}
 
 
 # =====================================================================
@@ -310,6 +312,119 @@ def _show_quantity(qname, panel_names, panel_data, *, normalize=False):
                 "curvature", vals, enabled=True,
                 cmap=cmap, vminmax=(vmin, vmax),
             )
+
+
+# =====================================================================
+# Export helpers (PLY for Blender, colour bar PDF, data for external plots)
+# =====================================================================
+
+_QUANTITY_DISPLAY = {
+    "K": r"Gaussian curvature $K$",
+    "H2": r"$H^2$",
+    "total": r"Curvature magnitude $\|h\|$",
+}
+
+
+def _export_ply(surface_name, pts, normals, panel_names, panel_data, state):
+    """Export each method's coloured point cloud as a PLY file for Blender."""
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+
+    qname = ALL_QUANTITIES[state["quantity"]]
+    normalize = state["normalize"]
+    cmap = plt.get_cmap(CMAPS.get(qname, "viridis"))
+
+    for pname in panel_names:
+        key = (qname, normalize)
+        if key not in panel_data[pname]:
+            continue
+        vals, vmin, vmax = panel_data[pname][key]
+        norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+        rgba = cmap(norm(vals))
+        rgb = (rgba[:, :3] * 255).astype(np.uint8)
+
+        N = len(pts)
+        safe = pname.replace("/", "_").replace(" ", "_")
+        fname = f"{surface_name}_{safe}_{qname}.ply"
+        with open(fname, "w") as f:
+            f.write("ply\n")
+            f.write("format ascii 1.0\n")
+            f.write(f"element vertex {N}\n")
+            f.write("property float x\nproperty float y\nproperty float z\n")
+            f.write("property float nx\nproperty float ny\nproperty float nz\n")
+            f.write("property uchar red\nproperty uchar green\nproperty uchar blue\n")
+            f.write("end_header\n")
+            for i in range(N):
+                f.write(f"{pts[i,0]} {pts[i,1]} {pts[i,2]} "
+                        f"{normals[i,0]} {normals[i,1]} {normals[i,2]} "
+                        f"{rgb[i,0]} {rgb[i,1]} {rgb[i,2]}\n")
+        print(f"Saved {fname}")
+
+
+def _export_colourbar(surface_name, panel_names, panel_data, state):
+    """Save a standalone colour bar PDF matching the current polyscope view."""
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+
+    qname = ALL_QUANTITIES[state["quantity"]]
+    normalize = state["normalize"]
+    key = (qname, normalize)
+    vmin = vmax = None
+    for name in panel_names:
+        if key in panel_data[name]:
+            _, vmin, vmax = panel_data[name][key]
+            break
+    if vmin is None:
+        print("No data for current quantity.")
+        return
+
+    cmap = plt.get_cmap(CMAPS.get(qname, "viridis"))
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+
+    fig, ax = plt.subplots(figsize=(4.5, 0.35))
+    cb = fig.colorbar(
+        plt.cm.ScalarMappable(norm=norm, cmap=cmap),
+        cax=ax, orientation="horizontal",
+    )
+    cb.set_label(_QUANTITY_DISPLAY.get(qname, qname))
+
+    fname = f"colourbar_{surface_name}_{qname}.pdf"
+    fig.savefig(fname, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {fname}")
+
+
+def _export_data(results):
+    """Export all data needed to regenerate plots externally.
+
+    Saves one .npz per surface with:
+        points, normals, sing_dist, u_params, v_params,
+        gt_K, gt_H2, gt_total,
+        <method>_K, <method>_H2, <method>_total  for each estimation method,
+        method_names (list of method names excluding 'ground truth').
+    """
+    for res in results:
+        sname = res["surface_name"]
+        gt = res["gt"]
+        methods = res["methods"]
+        estimation_methods = [m for m in methods if m != "ground truth"]
+
+        data = {
+            "sing_dist": res["sing_dist"],
+            "singularity_label": res["singularity_label"],
+            "gt_K": gt["K"],
+            "gt_H2": gt["H2"],
+            "gt_total": gt["total"],
+            "method_names": np.array(estimation_methods),
+        }
+        for mname in estimation_methods:
+            safe = mname.replace("-", "_").replace(" ", "_")
+            for qname in QUANTITIES:
+                data[f"{safe}_{qname}"] = methods[mname][qname]
+
+        fname = f"curvature_data_{sname}.npz"
+        np.savez(fname, **data)
+        print(f"Saved {fname}")
 
 
 # =====================================================================
@@ -532,9 +647,7 @@ def _print_summary_table(gt, methods):
 def run(
     surface_name: str,
     *,
-    k_bu: int = 30,
-    k_jet: int = 30,
-    degree: int = 3,
+    k_bu: int = 20,
     n_max: int | None = None,
     y_offset: float = 0.0,
 ):
@@ -569,16 +682,17 @@ def run(
     print("  Computing blow-up curvature ...")
     bu = _blowup_curvature(pts, normals, k=k_bu)
 
-    # Jet fitting
-    print("  Computing jet-fitting curvature ...")
-    jf = _jet_curvature_all(pts, normals, k=k_jet, degree=degree)
-
     # Build methods dict in display order: ground truth -> jet -> cnc -> blow-up
     methods: dict[str, dict[str, np.ndarray]] = {"ground truth": gt}
-    methods["jet"] = jf
+
+    # Jet fitting baseline (pre-computed, from jet/ folder)
+    jf = _load_jet_curvature(surface_name)
+    if jf is not None:
+        print(f"  Loading jet-fitting curvatures from jet/ ...")
+        methods["jet"] = jf
 
     # CNC baseline (if file exists)
-    cnc_path = Path(f"cnc/cnc_{surface_name}_xyzn.txt")
+    cnc_path = Path(__file__).parent / "cnc" / f"cnc_{surface_name}.txt"
     if cnc_path.exists():
         print(f"  Loading CNC curvatures from {cnc_path} ...")
         cnc_data = np.loadtxt(cnc_path)
@@ -666,6 +780,7 @@ def run(
         method_names=method_names,
         panel_names=panel_names,
         panel_data=panel_data,
+        pts=pts,
         normals=normals,
         gt=gt,
         methods=methods,
@@ -688,9 +803,7 @@ def main():
         choices=list(SURFACES.keys()),
         help="Surface to visualise (default: both)",
     )
-    parser.add_argument("--k-bu", type=int, default=30, help="k-NN for blow-up")
-    parser.add_argument("--k-jet", type=int, default=30, help="k-NN for jet fitting")
-    parser.add_argument("--degree", type=int, default=3, help="Jet fitting degree")
+    parser.add_argument("--k-bu", type=int, default=20, help="k-NN for blow-up")
     parser.add_argument("--n-max", type=int, default=None,
                         help="Downsample to at most this many points")
     args = parser.parse_args()
@@ -705,8 +818,8 @@ def main():
     all_results: list[dict] = []
 
     for idx, sname in enumerate(surface_names):
-        result = run(sname, k_bu=args.k_bu, k_jet=args.k_jet,
-                     degree=args.degree, n_max=args.n_max,
+        result = run(sname, k_bu=args.k_bu,
+                     n_max=args.n_max,
                      y_offset=idx * 8.0)
         all_panel_names.extend(result["panel_names"])
         all_panel_data.update(result["panel_data"])
@@ -760,6 +873,19 @@ def main():
 
         if psim.Button("Error bar chart (all surfaces)"):
             _plot_error_bar_chart(all_results)
+
+        psim.Separator()
+
+        for res in all_results:
+            sn = res["surface_name"]
+            if psim.Button(f"Export PLY ({sn})"):
+                _export_ply(sn, res["pts"], res["normals"],
+                            res["panel_names"], all_panel_data, state)
+            if psim.Button(f"Export colour bar ({sn})"):
+                _export_colourbar(sn, res["panel_names"], all_panel_data, state)
+
+        if psim.Button("Export data (.npz)"):
+            _export_data(all_results)
 
         if psim.Button("Screenshot"):
             fname = "curvature_analytic.png"

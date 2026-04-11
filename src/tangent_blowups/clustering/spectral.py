@@ -11,7 +11,7 @@ import numpy as np
 from scipy import sparse
 from sklearn.cluster import DBSCAN, KMeans
 
-from ..geometry.grassmann import BlownUpSample
+from ..geometry.iterated_grassmann import BlowUpLevel
 from ..pointcloud.laplacian import (
     pointcloud_laplacian,
     lifted_pointcloud_laplacian,
@@ -114,7 +114,7 @@ def spectral_clustering_pointcloud(
     points: np.ndarray,
     n_clusters: int,
     *,
-    k: int | None = 16,
+    k: int | None = 20,
     radius: float | None = None,
     h: float | Literal["local"] | None = "local",
     laplacian_normalized: bool = True,
@@ -161,24 +161,24 @@ def spectral_clustering_pointcloud(
 
 
 def _coerce_blown_up(
-    points_or_sample: np.ndarray | BlownUpSample,
+    points_or_sample: np.ndarray | BlowUpLevel,
     subspace_basis: np.ndarray | None,
-) -> BlownUpSample:
-    if isinstance(points_or_sample, BlownUpSample):
+) -> BlowUpLevel:
+    if isinstance(points_or_sample, BlowUpLevel):
         if subspace_basis is not None:
-            raise ValueError("subspace_basis must be None when passing BlownUpSample.")
+            raise ValueError("subspace_basis must be None when passing BlowUpLevel.")
         return points_or_sample
     if subspace_basis is None:
         raise ValueError("subspace_basis is required when passing raw points.")
-    return BlownUpSample(points_or_sample, subspace_basis)
+    return BlowUpLevel.from_point_tangents(points_or_sample, subspace_basis)
 
 
 def spectral_clustering_lifted(
-    points_or_sample: np.ndarray | BlownUpSample,
+    points_or_sample: np.ndarray | BlowUpLevel,
     subspace_basis: np.ndarray | None,
     n_clusters: int,
     *,
-    k: int | None = 16,
+    k: int | None = 20,
     radius: float | None = None,
     h: float | Literal["local"] | None = "local",
     alpha: float = 1.0,

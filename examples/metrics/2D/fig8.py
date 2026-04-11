@@ -1,7 +1,7 @@
 import numpy as np
 from typing import Optional
 
-from tangent_blowups.geometry.grassmann import BlownUpSample
+from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.testsupport import UniformCurve, figure8
 from tangent_blowups.testsupport.sample_utils import (
     filter_sample_vectors,
@@ -45,7 +45,7 @@ def build_fig8_points_and_tangents(
 
 
 def _run_distance_plots(
-    sample: BlownUpSample,
+    sample: BlowUpLevel,
     *,
     query_index: int,
     alpha: float,
@@ -83,7 +83,7 @@ def main():
         scale=2.0,
     )
 
-    lifted = BlownUpSample.from_tangents(points, tangents)
+    lifted = BlowUpLevel.from_point_tangents(points, tangents)
 
     alpha = 1.0
     downsample = 2

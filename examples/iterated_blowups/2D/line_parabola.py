@@ -45,7 +45,7 @@ from tangent_blowups.geometry.iterated_grassmann import (
 N_POINTS   = 1200      # total sample points (600 per component)
 CURVATURE  = 1.0       # parabola: y = CURVATURE * x^2
 K_BLOWUP   = 10        # k-NN for blow-up curvature regression
-ALPHA      = 5.0       # Chordal-Sasaki weight
+ALPHA  = 1.0  # Chordal-Sasaki weight
 LAM        = 1e-3      # ridge regularisation
 
 UMAP_NEIGHBORS = 15    # UMAP: local neighbourhood size

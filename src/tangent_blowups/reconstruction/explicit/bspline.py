@@ -6,7 +6,7 @@ from typing import Literal, Optional
 import numpy as np
 from scipy.interpolate import splprep, splev
 
-from ...geometry.grassmann import BlownUpSample
+from ...geometry.iterated_grassmann import BlowUpLevel
 
 SubspaceMetric = Literal["chordal", "geodesic"]
 
@@ -44,7 +44,7 @@ class BSplineResult:
 
 
 def _product_metric_embedding(
-    sample: BlownUpSample,
+    sample: BlowUpLevel,
     *,
     alpha: float,
     subspace_metric: SubspaceMetric,
@@ -52,7 +52,7 @@ def _product_metric_embedding(
     """
     Map R^n x G(k,n) into Euclidean space to preserve the product metric.
 
-    The BlownUpSample.embedding_vector() is exact for the chordal metric.
+    The BlowUpLevel.embedding_vector() is exact for the chordal metric.
     """
     if subspace_metric != "chordal":
         raise NotImplementedError(
@@ -84,7 +84,7 @@ def project_bspline_to_spatial(
 
 
 def fit_bspline_curve(
-    sample: BlownUpSample,
+    sample: BlowUpLevel,
     *,
     alpha: float = 1.0,
     subspace_metric: SubspaceMetric = "chordal",
@@ -138,7 +138,7 @@ def fit_bspline_curve(
     u_max = float(np.max(u))
     curve_u = np.linspace(u_min, u_max, n_eval)
     curve_embedding = evaluate_bspline(tck, curve_u)
-    curve_spatial = curve_embedding[:, : sample.n]
+    curve_spatial = curve_embedding[:, : sample.n_orig]
 
     return BSplineResult(
         tck=tck,

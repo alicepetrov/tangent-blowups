@@ -37,7 +37,6 @@ from tangent_blowups.testsupport import (
     figure8, tangent_parabola_line,
     helix, figure8_space, trefoil_knot,
 )
-from tangent_blowups.geometry.grassmann import BlownUpSample
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel, extract_level1
 from tangent_blowups.io.load import load_pointcloud
 from tangent_blowups.solvers.linalg import normalize_vectors
@@ -47,7 +46,7 @@ from tangent_blowups.solvers.linalg import normalize_vectors
 # ---------------------------------------------------------------------------
 K      = 40      # k-NN for both methods
 LAM    = 1e-3    # ridge regularisation for lifted curvature
-ALPHA  = 5.0     # Chordal-Sasaki weight
+ALPHA  = 1.0  # Chordal-Sasaki weight
 N_TOY  = 25000
 N_REAL = 25000
 ELEV, AZIM = 25, 45
@@ -228,7 +227,7 @@ def _load_thingi(name: str):
         idx = rng.choice(len(pts), N_REAL, replace=False)
         pts, nrm = pts[idx], nrm[idx]
 
-    frames = BlownUpSample.from_normals(pts, nrm).dualize().basis
+    frames = BlowUpLevel.from_normals(pts, nrm).frame
     return pts, frames, nrm
 
 

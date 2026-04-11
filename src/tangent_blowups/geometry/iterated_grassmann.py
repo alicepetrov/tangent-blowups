@@ -112,6 +112,41 @@ class BlowUpLevel:
     # ------------------------------------------------------------------
 
     @classmethod
+    def from_normals(
+        cls,
+        points: np.ndarray,  # (N, n)
+        normals: np.ndarray,  # (N, n)
+    ) -> "BlowUpLevel":
+        """Construct a level-0 blow-up from point positions and normals.
+
+        Builds (n-1)-dimensional tangent frames perpendicular to each normal.
+
+        Args:
+            points:  (N, n) spatial coordinates.
+            normals: (N, n) unit normal vectors (will be re-normalised).
+        """
+        from ..solvers.linalg import normalize_vectors
+
+        points = np.asarray(points, dtype=float)
+        normals = np.asarray(normalize_vectors(normals), dtype=float)
+        N, n = points.shape
+        d = n - 1  # tangent dimension
+
+        frames = np.empty((N, n, d), dtype=float)
+        for i in range(N):
+            # Householder-style: QR of normal gives normal as first col,
+            # remaining cols span the tangent plane.
+            Q, _ = np.linalg.qr(
+                np.column_stack([normals[i, :, np.newaxis],
+                                 np.eye(n)[:, :d]]),
+                mode="reduced",
+            )
+            # Q[:,0] ~ normal, Q[:,1:] spans tangent plane
+            frames[i] = Q[:, 1:]
+
+        return cls.from_point_tangents(points, frames)
+
+    @classmethod
     def from_point_tangents(
         cls,
         points: np.ndarray,  # (N, n)
@@ -166,6 +201,56 @@ class BlowUpLevel:
         P_flat = self.projectors.reshape(self.N, -1)   # (N, D^2)
         scale = np.sqrt(alpha / 2.0)
         return np.hstack([self.embedded, scale * P_flat])  # (N, D + D^2)
+
+    def distance_matrix(
+        self,
+        other: "BlowUpLevel | None" = None,
+        *,
+        alpha: float = 1.0,
+        subspace_metric: str = "chordal",
+    ) -> np.ndarray:
+        """Pairwise product-metric distances.
+
+        d(i,j) = sqrt( ||x_i - x_j||^2 + alpha * d_sub(U_i, U_j)^2 )
+
+        Args:
+            other: second sample (default: self).
+            alpha: weight on the subspace component.
+            subspace_metric: ``'chordal'`` or ``'geodesic'``.
+
+        Returns:
+            (N, M) distance matrix.
+        """
+        if other is None:
+            other = self
+
+        A = self.embedded
+        B = other.embedded
+        a2 = np.sum(A * A, axis=1)[:, np.newaxis]
+        b2 = np.sum(B * B, axis=1)[np.newaxis, :]
+        dist_x_sq = np.maximum(a2 + b2 - 2.0 * (A @ B.T), 0.0)
+
+        if subspace_metric == "chordal":
+            P = self.projectors
+            Q = other.projectors
+            inner = np.einsum("nij,mij->nm", P, Q)
+            dist_u_sq = np.maximum(
+                (self.d + other.d - 2.0 * inner) / 2.0, 0.0)
+        elif subspace_metric == "geodesic":
+            dist_u_sq = np.empty((self.N, other.N), dtype=float)
+            for i in range(self.N):
+                Ui = self.frame[i]
+                overlaps = np.einsum("dk,mde->mke", Ui, other.frame)
+                s = np.clip(
+                    np.linalg.svd(overlaps, compute_uv=False), 0.0, 1.0)
+                thetas = np.arccos(s)
+                dist_u_sq[i] = np.sum(thetas * thetas, axis=1)
+        else:
+            raise ValueError(
+                f"Unknown subspace_metric '{subspace_metric}'. "
+                "Expected 'chordal' or 'geodesic'.")
+
+        return np.sqrt(dist_x_sq + alpha * dist_u_sq)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -229,10 +314,10 @@ class BlowUpLevel:
     def lift(
         self,
         *,
-        k: int = 16,
+        k: int = 20,
         alpha: float = 1.0,
-        lam: float = 1e-3,
-        spatial_knn: bool = False,
+        lam: float = 0.0,
+        weight_config: "WeightConfig | None" = None,
     ) -> "BlowUpLevel":
         """
         Compute one step of the iterated blow-up.
@@ -255,18 +340,15 @@ class BlowUpLevel:
             k:     number of nearest neighbours for curvature estimation.
             alpha: Chordal-Sasaki weight (alpha_ell in the theory).
             lam:   ridge regularisation parameter (>= 0).
-            spatial_knn:  Controls the Gaussian weighting in the curvature
-                regression.  Neighbor *selection* always uses the lifted
-                Chordal-Sasaki metric (which separates sheets at
-                self-intersections).  If True, the Gaussian weights use
-                spatial (level-(ell-1)) distances, avoiding the scale
-                compression that attenuates curvature estimates in
-                high-curvature regions.  If False (default), the Gaussian
-                weights use lifted distances (original behaviour).
+            weight_config: Regression weight configuration.  If None,
+                defaults to product kernel with sigma_x=0.5, sigma_u=0.5.
 
         Returns:
             BlowUpLevel at level ell = self.level + 1.
         """
+        from .weight_config import WeightConfig, product_weights
+        if weight_config is None:
+            weight_config = WeightConfig()
         N, D, d = self.N, self.D, self.d
         n_comp = D - d       # complement dimension
         D_next = D + D * D   # = D * (1 + D)
@@ -299,26 +381,18 @@ class BlowUpLevel:
             Pi = P_all[i]               # (D, D)
             neighbors = nn_idx[i]       # (k_eff,)
 
-            # Gaussian weights with self-tuning bandwidth
-            if spatial_knn:
-                # Spatial distances — avoids scale compression in the
-                # lifted metric that attenuates curvature estimates.
-                d_w = self.embedded[neighbors] - self.embedded[i]   # (k_eff, D)
-            else:
-                # Lifted distances (original behaviour)
-                d_w = Phi_next[neighbors] - Phi_next[i]             # (k_eff, D_next)
-            dist2 = np.einsum("ki,ki->k", d_w, d_w)                # (k_eff,)
-            sorted_d2 = np.sort(dist2)
-            q = min(7, k_eff - 1)
-            bw = sorted_d2[q] if sorted_d2[q] > 0 else 1.0
-            w = np.exp(-dist2 / bw)                                  # (k_eff,)
-
             # Intrinsic coords: t_ij = U_i^T (Phi_j^{ell-1} - Phi_i^{ell-1})
             d_emb = self.embedded[neighbors] - self.embedded[i]  # (k_eff, D)
             t = d_emb @ Ui                                        # (k_eff, d)
 
             # Grassmann tangent coords: C_ij = N_i^T (P_j - P_i) U_i
             delta_P = P_all[neighbors] - Pi               # (k_eff, D, D)
+
+            # Regression weights (product kernel or uniform)
+            dx = self.embedded[neighbors, :self.n_orig] - self.embedded[i, :self.n_orig]
+            spatial_d2 = np.einsum("ki,ki->k", dx, dx)
+            angular_d2 = np.einsum("kab,kab->k", delta_P, delta_P)
+            w = product_weights(spatial_d2, angular_d2, weight_config)
             dP_Ui = delta_P @ Ui                          # (k_eff, D, d)
             # einsum: C[k,p,d] = sum_m N_i.T[p,m] * dP_Ui[k,m,d]
             C = np.einsum("pm,kmd->kpd", Ni.T, dP_Ui)   # (k_eff, n_comp, d)
@@ -367,52 +441,6 @@ class BlowUpLevel:
             (D, D * D, scale)  # block for P^(self.level): starts at col D, has D^2 cols
         ]
         return result
-
-    # ------------------------------------------------------------------
-    # Automatic parameter selection
-    # ------------------------------------------------------------------
-
-    def auto_alpha(self, *, k: int = 30) -> float:
-        """
-        Compute a data-driven weight parameter alpha for the lift.
-
-        Sets alpha = median_spatial^2 / median_projector^2, balancing the
-        spatial and angular scales so that neither dominates the lifted
-        metric.  This is the default alpha recommended in the paper
-        (Section 7, Implementation).
-
-        Args:
-            k:  k-NN neighbourhood size used to sample pairwise distances.
-
-        Returns:
-            alpha > 0.
-        """
-        k_eff = min(k, self.N - 1)
-        tree = cKDTree(self.embedded)
-        dist, idx = tree.query(self.embedded, k=k_eff + 1)
-        idx = idx[:, 1:]   # exclude self
-        dist = dist[:, 1:]
-
-        # Spatial distances: use original positions
-        positions = self.embedded[:, :self.n_orig]
-        rows = np.repeat(np.arange(self.N), k_eff)
-        cols = idx.ravel()
-        dx = positions[rows] - positions[cols]
-        dist2_spatial = np.einsum("ij,ij->i", dx, dx)
-
-        # Projector distances: ||P_i - P_j||_F^2 = 2d - 2||U_i^T U_j||_F^2
-        U = self.frame                                        # (N, D, d)
-        M = np.einsum("eka,ekb->eab", U[rows], U[cols])      # (E, d, d)
-        inner_sq = np.einsum("eab,eab->e", M, M)
-        dist2_proj = 2.0 * self.d - 2.0 * inner_sq
-        dist2_proj = np.maximum(dist2_proj, 0.0)              # numerical safety
-
-        med_spatial = float(np.median(np.sqrt(dist2_spatial)))
-        med_proj = float(np.median(np.sqrt(dist2_proj)))
-
-        if med_proj <= 0.0:
-            return 1.0
-        return (med_spatial / med_proj) ** 2
 
     # ------------------------------------------------------------------
     # Utilities
@@ -565,8 +593,9 @@ def extract_level2(
     level1: BlowUpLevel,
     level1_inv: Level1Invariants,
     *,
-    k: int = 16,
-    lam: float = 1e-3,
+    k: int = 20,
+    lam: float = 0.0,
+    weight_config: "WeightConfig | None" = None,
 ) -> Level2Invariants:
     """
     Estimate level-2 differential invariants: the gradient of the shape operator.
@@ -599,6 +628,10 @@ def extract_level2(
     Returns:
         Level2Invariants with ``curvature_gradient`` of shape (N, n_comp, d, d, d).
     """
+    from .weight_config import WeightConfig, product_weights
+    if weight_config is None:
+        weight_config = WeightConfig()
+
     N = level0.N
     d = level0.d
     h_all = level1_inv.shape_operator   # (N, n_comp, d, d)
@@ -610,6 +643,9 @@ def extract_level2(
     _, nn_idx = tree.query(level1.embedded, k=k_eff + 1)
     nn_idx = nn_idx[:, 1:]   # (N, k_eff) excluding self
 
+    # Level-1 projectors for angular distance
+    P1_all = level1.projectors  # (N, D1, D1)
+
     grad_h = np.zeros((N, n_comp, d, d, d), dtype=float)
 
     for i in range(N):
@@ -620,13 +656,12 @@ def extract_level2(
         d_emb = level0.embedded[neighbors] - level0.embedded[i]   # (k_eff, n)
         t = d_emb @ Ui                                              # (k_eff, d)
 
-        # Gaussian weights from level-1 distances (q-th neighbor bandwidth)
-        d_l1 = level1.embedded[neighbors] - level1.embedded[i]    # (k_eff, D1)
-        dist2 = np.einsum("ki,ki->k", d_l1, d_l1)
-        sorted_d2 = np.sort(dist2)
-        q_bw = min(7, k_eff - 1)
-        bw = sorted_d2[q_bw] if sorted_d2[q_bw] > 0 else 1.0
-        w = np.exp(-dist2 / bw)                     # (k_eff,)
+        # Regression weights (product kernel or uniform)
+        dx = level0.embedded[neighbors] - level0.embedded[i]       # spatial
+        spatial_d2 = np.einsum("ki,ki->k", dx, dx)
+        dP = P1_all[neighbors] - P1_all[i]                         # angular
+        angular_d2 = np.einsum("kab,kab->k", dP, dP)
+        w = product_weights(spatial_d2, angular_d2, weight_config)
 
         dh = h_all[neighbors] - h_all[i]            # (k_eff, n_comp, d, d)
         dh_flat = dh.reshape(k_eff, n_comp * d * d)
@@ -659,9 +694,10 @@ def iterated_blowup(
     frames: np.ndarray,
     num_levels: int,
     *,
-    k: int = 16,
+    k: int = 20,
     alpha: float = 1.0,
-    lam: float = 1e-3,
+    lam: float = 0.0,
+    weight_config: "WeightConfig | None" = None,
 ) -> list[BlowUpLevel]:
     """
     Compute the iterated tangent blow-up up to the requested number of levels.
@@ -674,13 +710,15 @@ def iterated_blowup(
         k:          nearest neighbours for curvature estimation at each level.
         alpha:      Chordal-Sasaki weight (applied uniformly at all levels).
         lam:        ridge regularisation for curvature estimation.
+        weight_config: Regression weight configuration for curvature estimation.
 
     Returns:
         List [level_0, level_1, ..., level_{num_levels}].
     """
     levels: list[BlowUpLevel] = [BlowUpLevel.from_point_tangents(points, frames)]
     for _ in range(num_levels):
-        levels.append(levels[-1].lift(k=k, alpha=alpha, lam=lam))
+        levels.append(levels[-1].lift(k=k, alpha=alpha, lam=lam,
+                                      weight_config=weight_config))
     return levels
 
 

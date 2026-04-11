@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from tangent_blowups.geometry.grassmann import BlownUpSample
+from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.solvers.linalg import normalize_vectors
 from tangent_blowups.testsupport import (
     Sample,
@@ -44,7 +44,7 @@ def build_curve_sample(
 
 
 def visualize_embedding_components(
-    sample: BlownUpSample,
+    sample: BlowUpLevel,
     *,
     alpha: float = 1.0,
     downsample: int = 1,
@@ -52,11 +52,11 @@ def visualize_embedding_components(
     """
     Visualize the 6D Nash embedding by coloring the 2D cloud with each component.
 
-    Uses BlownUpSample.embedding_vector(alpha=...), which returns:
+    Uses BlowUpLevel.embedding_vector(alpha=...), which returns:
         [x, y, sqrt(alpha/2) * P00, sqrt(alpha/2) * P01,
          sqrt(alpha/2) * P10, sqrt(alpha/2) * P11]
     """
-    pts = sample.spatial[::downsample]
+    pts = sample.embedded[::downsample]
     embed = sample.embedding_vector(alpha=alpha)[::downsample]
 
     labels = ["x", "y", "P00", "P01", "P10", "P11"]
@@ -86,7 +86,7 @@ def _lift_and_plot(curve_label: str, scenario: str, sample_in: Sample):
     points = np.asarray(sample_in.points, dtype=float)
     tangents = normalize_vectors(np.asarray(sample_in.tangents, dtype=float))
 
-    lifted = BlownUpSample.from_tangents(points, tangents)
+    lifted = BlowUpLevel.from_point_tangents(points, tangents)
 
     visualize_quiver(lifted, scale=0.05, downsample=5)
     visualize_components(lifted, components="all", downsample=2)

@@ -14,7 +14,8 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (registers 3D projection)
 
-from ..geometry.grassmann import BlownUpSample, dist_geodesic
+from ..geometry.iterated_grassmann import BlowUpLevel
+from ..geometry.projectors import dist_geodesic
 
 Metric = Literal["chordal", "geodesic"]
 LevelMode = Literal["linear", "quantile"]
@@ -47,7 +48,7 @@ def _resolve_query_index(
 
 
 def _subspace_distance_sq(
-    sample: BlownUpSample,
+    sample: BlowUpLevel,
     idx: int,
     metric: Metric,
 ) -> np.ndarray:
@@ -55,14 +56,14 @@ def _subspace_distance_sq(
         P = sample.projectors
         Pq = P[idx]
         inner = np.einsum("nij,ij->n", P, Pq)
-        dist_u_sq = sample.k - inner
+        dist_u_sq = sample.d - inner
         return np.maximum(dist_u_sq, 0.0)
 
     if metric == "geodesic":
-        Uq = sample.basis[idx]
+        Uq = sample.frame[idx]
         dist_u_sq = np.empty(sample.N, dtype=float)
         for i in range(sample.N):
-            d = dist_geodesic(Uq, sample.basis[i])
+            d = dist_geodesic(Uq, sample.frame[i])
             dist_u_sq[i] = d * d
         return dist_u_sq
 
@@ -72,7 +73,7 @@ def _subspace_distance_sq(
 
 
 def compute_distance_fields(
-    sample: BlownUpSample,
+    sample: BlowUpLevel,
     *,
     query_index: Optional[int] = None,
     alpha: float = 1.0,
@@ -88,8 +89,8 @@ def compute_distance_fields(
     """
     idx = _resolve_query_index(sample.N, query_index, rng, seed)
 
-    qx = sample.spatial[idx]
-    dist_x = np.linalg.norm(sample.spatial - qx, axis=1)
+    qx = sample.embedded[idx]
+    dist_x = np.linalg.norm(sample.embedded - qx, axis=1)
 
     dist_u_sq = _subspace_distance_sq(sample, idx, subspace_metric)
     dist_product = np.sqrt(dist_x * dist_x + alpha * dist_u_sq)
@@ -174,7 +175,7 @@ def _resolve_highlight_k(
 
 
 def _prepare_plot_data(
-    sample: BlownUpSample,
+    sample: BlowUpLevel,
     downsample: int,
     left_values: np.ndarray,
     right_values: np.ndarray,
@@ -184,12 +185,12 @@ def _prepare_plot_data(
     if downsample < 1:
         raise ValueError("downsample must be >= 1.")
 
-    spatial_dim = sample.spatial.shape[1]
+    spatial_dim = sample.embedded.shape[1]
     if spatial_dim not in (2, 3):
         raise ValueError(f"Only 2D/3D point clouds are supported. Got n={spatial_dim}.")
 
     sl = slice(None, None, downsample)
-    pts = sample.spatial[sl]
+    pts = sample.embedded[sl]
     left_plot = left_values[sl]
     right_plot = right_values[sl]
 
@@ -495,7 +496,7 @@ def _plot_distance_pair(
 
 
 def _visualize_distance_pair(
-    sample: BlownUpSample,
+    sample: BlowUpLevel,
     *,
     query_index: int,
     left_values: np.ndarray,
@@ -561,7 +562,7 @@ def _visualize_distance_pair(
         left_title=left_title,
         right_title=right_title,
         suptitle=suptitle,
-        query_point=sample.spatial[query_index],
+        query_point=sample.embedded[query_index],
         spatial_dim=spatial_dim,
         left_cmap=left_cmap,
         right_cmap=right_cmap,
@@ -583,7 +584,7 @@ def _visualize_distance_pair(
 
 
 def visualize_distance_comparison(
-    sample: BlownUpSample,
+    sample: BlowUpLevel,
     *,
     query_index: Optional[int] = None,
     alpha: float = 1.0,
@@ -654,7 +655,7 @@ def visualize_distance_comparison(
 
 
 def visualize_product_metric_comparison(
-    sample: BlownUpSample,
+    sample: BlowUpLevel,
     *,
     query_index: Optional[int] = None,
     alpha: float = 1.0,
@@ -682,8 +683,8 @@ def visualize_product_metric_comparison(
     """
     idx = _resolve_query_index(sample.N, query_index, rng, seed)
 
-    qx = sample.spatial[idx]
-    dist_x = np.linalg.norm(sample.spatial - qx, axis=1)
+    qx = sample.embedded[idx]
+    dist_x = np.linalg.norm(sample.embedded - qx, axis=1)
 
     dist_geo = np.sqrt(dist_x * dist_x + alpha * _subspace_distance_sq(sample, idx, "geodesic"))
     dist_chord = np.sqrt(dist_x * dist_x + alpha * _subspace_distance_sq(sample, idx, "chordal"))

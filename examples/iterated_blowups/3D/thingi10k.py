@@ -29,8 +29,8 @@ from umap import UMAP  # type: ignore[import-untyped]
 from sklearn.cluster import HDBSCAN
 from sklearn.preprocessing import StandardScaler
 
-from tangent_blowups.geometry.grassmann import BlownUpSample
 from tangent_blowups.geometry.iterated_grassmann import (
+    BlowUpLevel,
     extract_level1,
     extract_level2,
     iterated_blowup,
@@ -43,7 +43,7 @@ from tangent_blowups.solvers.linalg import normalize_vectors
 # Parameters
 # ---------------------------------------------------------------------------
 K_BLOWUP       = 100       # k-NN for blow-up curvature regression
-ALPHA          = 5.0       # Chordal-Sasaki weight
+ALPHA  = 1.0  # Chordal-Sasaki weight
 LAM            = 1e-3      # ridge regularisation
 
 UMAP_NEIGHBORS = 15        # UMAP: local neighbourhood size
@@ -208,7 +208,7 @@ def main():
     # ------------------------------------------------------------------
     # 2. Normals -> tangent frames -> iterated blow-up
     # ------------------------------------------------------------------
-    tangent_frames = BlownUpSample.from_normals(points, normals).dualize().basis
+    tangent_frames = BlowUpLevel.from_normals(points, normals).frame
     levels = iterated_blowup(
         points, tangent_frames, num_levels=num_levels,
         k=K_BLOWUP, alpha=ALPHA, lam=LAM,

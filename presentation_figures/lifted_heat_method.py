@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from scipy.spatial import cKDTree
 
-from tangent_blowups.geometry.grassmann import BlownUpSample
+from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.pointcloud.geodesic_heat import lifted_heat_method
 from tangent_blowups.io.load import load_pointcloud
 from tangent_blowups.solvers.linalg import normalize_vectors
@@ -35,7 +35,7 @@ from tangent_blowups.solvers.linalg import normalize_vectors
 # Parameters
 # ---------------------------------------------------------------------------
 K       = 20       # k-NN for Laplacian construction
-ALPHA   = 10.0      # Chordal-Sasaki weight for lifted method
+ALPHA  = 1.0  # Chordal-Sasaki weight for lifted method
 N_MAX   = 25000    # subsample cap
 N_LEVELS = 16      # discrete geodesic rings
 ELEV, AZIM = 20, 50
@@ -49,7 +49,7 @@ DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "thingi10k_pointcloud"
 # Data loading
 # ---------------------------------------------------------------------------
 
-def _load(name: str) -> tuple[np.ndarray, BlownUpSample]:
+def _load(name: str) -> tuple[np.ndarray, BlowUpLevel]:
     path = DATA_DIR / f"{name}.npz"
     pc  = load_pointcloud(path)
     pts = np.asarray(pc.points,  dtype=float).reshape(-1, 3)
@@ -64,8 +64,7 @@ def _load(name: str) -> tuple[np.ndarray, BlownUpSample]:
         idx = rng.choice(len(pts), N_MAX, replace=False)
         pts, nrm = pts[idx], nrm[idx]
 
-    # normal subspace → dualize to get tangent frame
-    bup = BlownUpSample.from_normals(pts, nrm).dualize()
+    bup = BlowUpLevel.from_normals(pts, nrm)
     return pts, bup
 
 
@@ -75,7 +74,7 @@ def _load(name: str) -> tuple[np.ndarray, BlownUpSample]:
 # tangent-frame diversity among its k-NN.
 # ---------------------------------------------------------------------------
 
-def _find_intersection_source(pts: np.ndarray, bup: BlownUpSample,
+def _find_intersection_source(pts: np.ndarray, bup: BlowUpLevel,
                                k_probe: int = 15) -> int:
     """
     Returns the index of a point near the self-intersection.

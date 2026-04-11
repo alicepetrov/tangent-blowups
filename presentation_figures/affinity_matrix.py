@@ -30,7 +30,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.gridspec as gridspec
 
-from tangent_blowups.geometry.grassmann import BlownUpSample
+from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.solvers.linalg import normalize_vectors
 from tangent_blowups.testsupport import (
     figure8,
@@ -43,7 +43,7 @@ from tangent_blowups.testsupport import (
 # Parameters
 # ---------------------------------------------------------------------------
 N      = 120     # total sample points per example
-ALPHA  = 5.0    # Grassmannian weight  alpha  in the lifted metric
+ALPHA  = 1.0  # Grassmannian weight  alpha  in the lifted metric
 H      = 0.5    # Gaussian bandwidth h  (same for Euclidean and lifted)
 PT_SZ  = 8.0
 
@@ -71,7 +71,7 @@ def _build(curve, n_pts, *, t_max=2.0 * np.pi, arm_split=np.pi):
     t    = np.linspace(0.0, t_max, n_pts, endpoint=False)
     arm  = (t >= arm_split).astype(int)
 
-    bup = BlownUpSample.from_tangents(pts, tans)
+    bup = BlowUpLevel.from_point_tangents(pts, tans)
     return pts, tans, t, arm, bup
 
 
@@ -155,7 +155,7 @@ def _build_cross_lines(n_pts: int, scale: float = 1.5):
     tans = np.vstack([tans_h, tans_v])
     arm  = np.concatenate([arm_h, arm_v])
 
-    bup = BlownUpSample.from_tangents(pts, tans)
+    bup = BlowUpLevel.from_point_tangents(pts, tans)
     return pts, tans, arm, bup
 
 

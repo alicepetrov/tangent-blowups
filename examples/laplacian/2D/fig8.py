@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import matplotlib.pyplot as plt
 
-from tangent_blowups.geometry.grassmann import BlownUpSample
+from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.pointcloud.laplacian import (
     pointcloud_laplacian,
     lifted_pointcloud_laplacian,
@@ -61,11 +61,11 @@ def compute_laplacians(
     points: np.ndarray,
     tangents: np.ndarray,
     *,
-    k: int = 16,
+    k: int = 20,
     h: float | None = None,
     normalized: bool = True,
     alpha: float = 1.0,
-) -> tuple[np.ndarray, np.ndarray, BlownUpSample]:
+) -> tuple[np.ndarray, np.ndarray, BlowUpLevel]:
     """
     Build point cloud and lifted Laplacians for the same sample.
     """
@@ -77,7 +77,7 @@ def compute_laplacians(
         symmetrize=True,
     )
 
-    lifted = BlownUpSample.from_tangents(points, tangents)
+    lifted = BlowUpLevel.from_point_tangents(points, tangents)
     L_lifted = lifted_pointcloud_laplacian(
         lifted,
         k=k,
@@ -99,7 +99,7 @@ def main():
     n = 1200
     scale = 2.0
     jitter = 0.02
-    k = 16
+    k = 20
     alpha = 1.0
     normalized = True
 

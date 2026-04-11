@@ -70,7 +70,7 @@ def main():
         description="Sample parametric surfaces to text files"
     )
     parser.add_argument(
-        "-n", "--num-points", type=int, default=100_000,
+        "-n", "--num-points", type=int, default=200_000,
         help="Number of points to sample (default: 100000)",
     )
     parser.add_argument(

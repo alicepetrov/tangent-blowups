@@ -41,7 +41,6 @@ from scipy.spatial import cKDTree
 from scipy.sparse import linalg as spla
 
 from tangent_blowups.clustering import spectral_clustering_from_laplacian
-from tangent_blowups.geometry.grassmann import BlownUpSample
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.geometry.kernels import lifted_laplacian
 from tangent_blowups.io.load import load_pointcloud
@@ -316,12 +315,12 @@ def main():
                         help="Spectral embedding dimension for DBSCAN")
     parser.add_argument("--dbscan-eps", type=float, default=0.1)
     parser.add_argument("--dbscan-min-samples", type=int, default=10)
-    parser.add_argument("--k", type=int, default=30)
+    parser.add_argument("--k", type=int, default=20)
     parser.add_argument("--alpha", type=float, default=1.0)
     parser.add_argument("--num-levels", type=int, default=1,
                         help="Number of blow-up levels (1 = level-1, 2 = level-2, ...)")
     parser.add_argument("--kernel", type=str, default="product",
-                        choices=["self_tuning", "gaussian", "product"])
+                        choices=["self_tuning", "product"])
     parser.add_argument("--sigma-x", type=float, default=0.5)
     parser.add_argument("--sigma-u", type=float, default=0.5)
     parser.add_argument("--n-cells", type=float, default=8.0)
@@ -376,10 +375,10 @@ def main():
     # (c) Lifted
     num_levels = args.num_levels
     print(f"Building level-{num_levels} blow-up ...", end="", flush=True)
-    tangent_frames = BlownUpSample.from_normals(pts, nrm).dualize().basis
+    tangent_frames = BlowUpLevel.from_normals(pts, nrm).frame
     level = BlowUpLevel.from_point_tangents(pts, tangent_frames)
     for _ in range(num_levels):
-        level = level.lift(k=k, alpha=args.alpha, lam=1e-3)
+        level = level.lift(k=k, alpha=args.alpha)
     print(f" D={level.D}")
 
     print("Lifted spectral segmentation ...", end="", flush=True)

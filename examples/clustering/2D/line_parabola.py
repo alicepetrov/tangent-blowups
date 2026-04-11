@@ -70,7 +70,7 @@ SEED       = 42
 
 K_BLOWUP   = 30         # k-NN for curvature regression inside lift()
 K_PCA      = 30         # k-NN for local PCA tangent estimation
-ALPHA      = 50.0       # Chordal-Sasaki scaling
+ALPHA  = 1.0  # Chordal-Sasaki scaling
 LAM        = 1e-3       # ridge regularisation for curvature regression
 
 K_KERNEL   = 20         # k-NN for affinity construction

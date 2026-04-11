@@ -47,7 +47,7 @@ print(f"  tangents: {tangents.shape}")
 
 # ── 2.  Lift to blow-up space ────────────────────────────────────────
 level0 = BlowUpLevel.from_point_tangents(points_noisy, tangents)
-level1 = level0.lift(k=16, alpha=1.0)
+level1 = level0.lift(k=20, alpha=1.0)
 
 print(f"\nBlow-up level 1:")
 print(f"  Ambient dim D = {level1.D}  (was {level0.D})")

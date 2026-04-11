@@ -1,7 +1,7 @@
 """
 Curvature estimation accuracy on analytic shapes
 =================================================
-Tests blow-up and jet-fitting curvature against closed-form ground truth on
+Tests blow-up curvature against closed-form ground truth on
 both manifold and non-manifold surfaces.
 
 Manifold shapes
@@ -28,7 +28,6 @@ import numpy as np
 import pytest
 
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel, extract_level1
-from tangent_blowups.geometry.jet_fitting import jet_curvature
 from tangent_blowups.testsupport import (
     RandomSurface,
     sample,
@@ -236,18 +235,13 @@ def _sample_surface(surface, n_pts, u_bounds, v_bounds, seed=42):
     return pts[valid], frames[valid], nrm[valid], u_p[valid], v_p[valid]
 
 
-def blowup_curvature(pts, frames, *, k=30, alpha=1.0, lam=1e-4):
+def blowup_curvature(pts, frames, *, k=20, alpha=1.0, lam=0.0):
     """Returns (K, H) via level-1 blow-up."""
     l0 = BlowUpLevel.from_point_tangents(pts, frames)
-    l1 = l0.lift(k=k, alpha=alpha, lam=lam, spatial_knn=True)
+    l1 = l0.lift(k=k, alpha=alpha, lam=lam)
     inv = extract_level1(l1)
     return inv.gaussian_curvature, inv.mean_curvature[:, 0]
 
-
-def jet_curvature_KH(pts, normals, *, k=30, degree=3):
-    """Returns (K, H) via jet fitting."""
-    res = jet_curvature(pts, normals, k=k, degree=degree)
-    return res["gaussian_curvature"], res["mean_curvature"]
 
 
 # =====================================================================
@@ -301,11 +295,9 @@ class TestSphere:
         )
         K_gt, H_gt = sphere_analytic(u, v, radius=self.RADIUS)
         K_bu, H_bu = blowup_curvature(pts, frames, k=25)
-        K_jf, H_jf = jet_curvature_KH(pts, nrm, k=25)
         return dict(
             K_gt=K_gt, H_gt=H_gt,
             K_bu=K_bu, H_bu=H_bu,
-            K_jf=K_jf, H_jf=H_jf,
         )
 
     def test_blowup_K_correlation(self, data):
@@ -329,20 +321,6 @@ class TestSphere:
             f"median |H| blow-up = {median_H:.4f}, expected {expected:.4f}"
         )
 
-    def test_jet_K_mean(self, data):
-        expected = 1.0 / self.RADIUS**2
-        median_K = np.nanmedian(data["K_jf"])
-        assert abs(median_K - expected) / expected < 0.5, (
-            f"median K jet = {median_K:.4f}, expected {expected:.4f}"
-        )
-
-    def test_jet_H_mean(self, data):
-        expected = 1.0 / self.RADIUS
-        median_H = np.nanmedian(np.abs(data["H_jf"]))
-        assert abs(median_H - expected) / expected < 0.5, (
-            f"median |H| jet = {median_H:.4f}, expected {expected:.4f}"
-        )
-
 
 class TestMonkeySaddle:
     """Monkey saddle z = 0.25*(u^3 - 3uv^2): K < 0 away from origin."""
@@ -358,11 +336,9 @@ class TestMonkeySaddle:
         )
         K_gt, H_gt = monkey_saddle_analytic(u, v)
         K_bu, H_bu = blowup_curvature(pts, frames, k=25)
-        K_jf, H_jf = jet_curvature_KH(pts, nrm, k=25)
         return dict(
             K_gt=K_gt, H_gt=H_gt,
             K_bu=K_bu, H_bu=H_bu,
-            K_jf=K_jf, H_jf=H_jf,
         )
 
     def test_blowup_K_correlation(self, data):
@@ -372,14 +348,6 @@ class TestMonkeySaddle:
     def test_blowup_H_correlation(self, data):
         r = correlation(np.abs(data["H_gt"]), np.abs(data["H_bu"]))
         assert r > 0.5, f"|H| blow-up corr = {r:.4f}"
-
-    def test_jet_K_correlation(self, data):
-        r = correlation(data["K_gt"], data["K_jf"])
-        assert r > 0.7, f"K jet corr = {r:.4f}"
-
-    def test_jet_H_correlation(self, data):
-        r = correlation(np.abs(data["H_gt"]), np.abs(data["H_jf"]))
-        assert r > 0.6, f"|H| jet corr = {r:.4f}"
 
 
 class TestKleinBottle:
@@ -397,11 +365,9 @@ class TestKleinBottle:
         )
         K_gt, H_gt = klein_analytic(u, v)
         K_bu, H_bu = blowup_curvature(pts, frames, k=25)
-        K_jf, H_jf = jet_curvature_KH(pts, nrm, k=25)
         return dict(
             K_gt=K_gt, H_gt=H_gt,
             K_bu=K_bu, H_bu=H_bu,
-            K_jf=K_jf, H_jf=H_jf,
         )
 
     def test_blowup_K_correlation(self, data):
@@ -411,10 +377,6 @@ class TestKleinBottle:
     def test_blowup_H_correlation(self, data):
         r = correlation(np.abs(data["H_gt"]), np.abs(data["H_bu"]))
         assert r > 0.4, f"|H| blow-up corr = {r:.4f}"
-
-    def test_jet_K_correlation(self, data):
-        r = correlation(data["K_gt"], data["K_jf"])
-        assert r > 0.35, f"K jet corr = {r:.4f}"
 
 
 # =====================================================================
@@ -440,11 +402,9 @@ class TestWhitneyUmbrella:
         H_gt[singular] = np.nan
 
         K_bu, H_bu = blowup_curvature(pts, frames, k=20)
-        K_jf, H_jf = jet_curvature_KH(pts, nrm, k=30)
         return dict(
             K_gt=K_gt, H_gt=H_gt,
             K_bu=K_bu, H_bu=H_bu,
-            K_jf=K_jf, H_jf=H_jf,
             singular=singular,
             u=u,
         )
@@ -454,11 +414,6 @@ class TestWhitneyUmbrella:
         away = ~data["singular"]
         r = correlation(data["K_gt"], data["K_bu"], mask=away)
         assert r > 0.4, f"K blow-up corr (away) = {r:.4f}"
-
-    def test_jet_K_away_from_singularity(self, data):
-        away = ~data["singular"]
-        r = correlation(data["K_gt"], data["K_jf"], mask=away)
-        assert r > 0.3, f"K jet corr (away) = {r:.4f}"
 
     def test_blowup_H_away_from_singularity(self, data):
         away = ~data["singular"]
@@ -490,9 +445,8 @@ class TestTangentSpheres:
             u_bounds=(0.0, 2.0), v_bounds=(0.0, 1.0),
         )
         K_bu, H_bu = blowup_curvature(pts, frames, k=25)
-        K_jf, H_jf = jet_curvature_KH(pts, nrm, k=25)
         expected_K = 1.0 / self.RADIUS**2
-        return dict(K_bu=K_bu, H_bu=H_bu, K_jf=K_jf, H_jf=H_jf,
+        return dict(K_bu=K_bu, H_bu=H_bu,
                     expected_K=expected_K)
 
     def test_blowup_K_median(self, data):
@@ -501,13 +455,6 @@ class TestTangentSpheres:
         expected = data["expected_K"]
         assert abs(median_K - expected) / expected < 1.0, (
             f"median |K| blow-up = {median_K:.4f}, expected ~{expected:.4f}"
-        )
-
-    def test_jet_K_median(self, data):
-        median_K = np.nanmedian(np.abs(data["K_jf"]))
-        expected = data["expected_K"]
-        assert abs(median_K - expected) / expected < 1.0, (
-            f"median |K| jet = {median_K:.4f}, expected ~{expected:.4f}"
         )
 
     def test_blowup_H_sign_consistency(self, data):
@@ -542,10 +489,8 @@ class TestPlaneParaboloidTangent:
         parab_mask = face == 1
 
         K_bu, H_bu = blowup_curvature(pts, frames, k=25)
-        K_jf, H_jf = jet_curvature_KH(pts, nrm, k=25)
         return dict(
             K_bu=K_bu, H_bu=H_bu,
-            K_jf=K_jf, H_jf=H_jf,
             plane_mask=plane_mask, parab_mask=parab_mask,
         )
 
@@ -559,11 +504,6 @@ class TestPlaneParaboloidTangent:
         assert median_K < median_K_p, (
             f"Plane |K| ({median_K:.4f}) should be < paraboloid |K| ({median_K_p:.4f})"
         )
-
-    def test_jet_plane_K_near_zero(self, data):
-        K_plane = np.abs(data["K_jf"][data["plane_mask"]])
-        K_parab = np.abs(data["K_jf"][data["parab_mask"]])
-        assert np.nanmedian(K_plane) < np.nanmedian(K_parab)
 
     def test_blowup_paraboloid_positive_K(self, data):
         """Paraboloid sheet should have K > 0 (elliptic)."""
@@ -593,10 +533,8 @@ class TestCylindersTangent:
         cyl2 = face == 1
 
         K_bu, H_bu = blowup_curvature(pts, frames, k=25)
-        K_jf, H_jf = jet_curvature_KH(pts, nrm, k=25)
         return dict(
             K_bu=K_bu, H_bu=H_bu,
-            K_jf=K_jf, H_jf=H_jf,
             cyl1=cyl1, cyl2=cyl2,
         )
 
@@ -613,10 +551,6 @@ class TestCylindersTangent:
             f"median |H| = {median_H:.4f}, expected {expected_H:.4f}"
         )
 
-    def test_jet_K_near_zero(self, data):
-        median_K = np.nanmedian(np.abs(data["K_jf"]))
-        assert median_K < 1.0, f"jet median |K| = {median_K:.4f}, expected ~0"
-
 
 class TestPlaneCross:
     """Two perpendicular planes: K = 0, H = 0 everywhere (both sheets flat)."""
@@ -631,8 +565,7 @@ class TestPlaneCross:
             u_bounds=(0.0, 2.0), v_bounds=(0.0, 1.0),
         )
         K_bu, H_bu = blowup_curvature(pts, frames, k=20)
-        K_jf, H_jf = jet_curvature_KH(pts, nrm, k=20)
-        return dict(K_bu=K_bu, H_bu=H_bu, K_jf=K_jf, H_jf=H_jf)
+        return dict(K_bu=K_bu, H_bu=H_bu)
 
     def test_blowup_K_near_zero(self, data):
         """Flat planes should have |K| ~ 0."""
@@ -642,7 +575,3 @@ class TestPlaneCross:
     def test_blowup_H_near_zero(self, data):
         p90 = np.nanpercentile(np.abs(data["H_bu"]), 90)
         assert p90 < 5.0, f"90th pct |H| blow-up = {p90:.4f}"
-
-    def test_jet_K_near_zero(self, data):
-        p90 = np.nanpercentile(np.abs(data["K_jf"]), 90)
-        assert p90 < 5.0, f"90th pct |K| jet = {p90:.4f}"

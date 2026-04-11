@@ -1,7 +1,7 @@
 """
 Lifted Kernels on 3D Surface Point Clouds (Thingi10k)
 ------------------------------------------------------
-Demonstrates the three lifted kernel families on real 3D surface point clouds.
+Demonstrates the two lifted kernel families on real 3D surface point clouds.
 
 For 3D surfaces (d=2 tangent plane, n_comp=1 normal) the kernel hierarchy is:
 
@@ -14,7 +14,6 @@ For 3D surfaces (d=2 tangent plane, n_comp=1 normal) the kernel hierarchy is:
   Level 1, self-tuning  : k-NN in Chordal-Sasaki metric
                             d^2 = ||x_i - x_j||^2 + (alpha/2)||P_i - P_j||_F^2
                           Normal information baked into the neighbourhood graph.
-  Level 1, gaussian     : fixed-bandwidth Gaussian in Chordal-Sasaki metric
   Level 1, product      : Chordal-Sasaki k-NN, separate sigma_x / sigma_u
                           for the current level-1 tangent projectors (encodes
                           curvature directions).
@@ -71,7 +70,7 @@ from tangent_blowups.pointcloud.laplacian import laplacian_spectrum
 # ---------------------------------------------------------------------------
 
 K_BLOWUP  = 15     # k-NN for curvature regression inside iterated_blowup
-ALPHA     = 10.0    # Chordal-Sasaki weighting factor
+ALPHA  = 1.0  # Chordal-Sasaki weighting factor
 LAM       = 1e-3   # ridge regularisation
 
 K_KERNEL  = 16     # k-NN for affinity construction
@@ -225,9 +224,6 @@ def _build_L(level: BlowUpLevel, kernel: str) -> tuple:
     """Build (L, W, D) with auto bandwidths."""
     if kernel == "self_tuning":
         return lifted_laplacian(level, kernel="self_tuning", k=K_KERNEL, h="local")
-    if kernel == "gaussian":
-        sigma = _median_embed_dist(level)
-        return lifted_laplacian(level, kernel="gaussian", k=K_KERNEL, sigma=sigma)
     if kernel == "product":
         sigma_x = _median_spatial_dist(level)
         sigma_u = _median_proj_dist(level)
@@ -375,18 +371,12 @@ def main():
     ev_C, modes_C = _spectrum(L_C, N_MODES)
     print(f"       Fiedler gap = {ev_C[1]-ev_C[0]:.5f}")
 
-    # (D) Level 1, gaussian: fixed bandwidth in Chordal-Sasaki metric
-    print("   (D) Level 1, gaussian ...")
-    L_D, _, _ = _build_L(l1, "gaussian")
+    # (D) Level 1, product: separate spatial + angular bandwidths using
+    #     level-1 tangent projectors (which encode curvature direction)
+    print("   (D) Level 1, product ...")
+    L_D, _, _ = _build_L(l1, "product")
     ev_D, _ = _spectrum(L_D, 1)   # only need eigenvalues for spectrum comparison
     print(f"       Fiedler gap = {ev_D[1]-ev_D[0]:.5f}")
-
-    # (E) Level 1, product: separate spatial + angular bandwidths using
-    #     level-1 tangent projectors (which encode curvature direction)
-    print("   (E) Level 1, product ...")
-    L_E, _, _ = _build_L(l1, "product")
-    ev_E, _ = _spectrum(L_E, 1)   # only need eigenvalues for spectrum comparison
-    print(f"       Fiedler gap = {ev_E[1]-ev_E[0]:.5f}")
 
     # ---------------------------------------------------------------
     # Figure 1: Fiedler vector + eigenvalue spectrum
@@ -449,14 +439,13 @@ def main():
     # ---------------------------------------------------------------
     # Figure 3: Eigenvalue spectrum comparison — all five kernels
     # ---------------------------------------------------------------
-    fig3, axes3 = plt.subplots(1, 5, figsize=(15, 3.5), sharey=False)
+    fig3, axes3 = plt.subplots(1, 4, figsize=(12, 3.5), sharey=False)
 
     spec_cases = [
         (ev_A, "L0 self-tuning\n(position)"),
         (ev_B, "L0 product\n(pos x angular)"),
         (ev_C, "L1 self-tuning\n(Chordal-Sasaki)"),
-        (ev_D, "L1 gaussian\n(fixed bandwidth)"),
-        (ev_E, "L1 product\n(L1 pos x angular)"),
+        (ev_D, "L1 product\n(L1 pos x angular)"),
     ]
 
     for ax, (evals, title) in zip(axes3, spec_cases):

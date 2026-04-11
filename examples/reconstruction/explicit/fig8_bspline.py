@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import splprep, splev
 
-from tangent_blowups.geometry.grassmann import BlownUpSample
+from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.reconstruction.explicit.bspline import fit_bspline_curve
 from tangent_blowups.solvers.linalg import normalize_vectors
 from tangent_blowups.testsupport import UniformCurve, figure8, sample
@@ -81,7 +81,7 @@ def main() -> None:
         jitter=0.2,
     )
 
-    lifted = BlownUpSample.from_tangents(points, tangents)
+    lifted = BlowUpLevel.from_point_tangents(points, tangents)
     result = fit_bspline_curve(
         lifted,
         alpha=1.0,

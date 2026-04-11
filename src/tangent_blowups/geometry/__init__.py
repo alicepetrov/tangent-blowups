@@ -1,27 +1,20 @@
+from .weight_config import WeightConfig, product_weights
 from .kernels import (
     lifted_affinity,
-    lifted_gaussian_affinity,
     product_affinity,
     affinity_to_laplacian,
     lifted_laplacian,
     lifted_gradient,
     lifted_divergence,
-    div_grad_operator,
-)
-from .frenet_serret import (
-    FrenetSerretInvariants,
-    extract_frenet_serret,
 )
 
 __all__ = [
+    "WeightConfig",
+    "product_weights",
     "lifted_affinity",
-    "lifted_gaussian_affinity",
     "product_affinity",
     "affinity_to_laplacian",
     "lifted_laplacian",
     "lifted_gradient",
     "lifted_divergence",
-    "div_grad_operator",
-    "FrenetSerretInvariants",
-    "extract_frenet_serret",
 ]

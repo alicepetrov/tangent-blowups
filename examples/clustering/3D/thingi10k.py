@@ -15,7 +15,6 @@ from matplotlib.colors import ListedColormap
 from sklearn.cluster import HDBSCAN
 
 from tangent_blowups.clustering import spectral_clustering_from_laplacian
-from tangent_blowups.geometry.grassmann import BlownUpSample
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.geometry.kernels import lifted_laplacian
 from tangent_blowups.io.load import load_pointcloud
@@ -194,9 +193,9 @@ def main():
         help="Number of blow-up levels to compute (default: 1, try 2 for curvature).",
     )
     parser.add_argument(
-        "--kernel", type=str, default="self_tuning",
-        choices=["self_tuning", "gaussian", "product"],
-        help="Kernel family for the lifted Laplacian (default: self_tuning).",
+        "--kernel", type=str, default="product",
+        choices=["self_tuning", "product"],
+        help="Kernel family for the lifted Laplacian (default: product).",
     )
     args = parser.parse_args()
 
@@ -206,8 +205,8 @@ def main():
     kernel = args.kernel
     n_clusters = 20
     k = 20
-    alpha = 5.0
-    lam = 1e-3
+    alpha = 1.0
+    lam = 0.0
     normalized = True
     random_state = 7
     dbscan_eps = 0.2
@@ -258,7 +257,7 @@ def main():
     # Kernel Laplacian on iterated blow-up levels
     # ------------------------------------------------------------------
     # normals (N,3) -> tangent frames (N,3,2) via Grassmannian duality
-    tangent_frames = BlownUpSample.from_normals(points, normals).dualize().basis
+    tangent_frames = BlowUpLevel.from_normals(points, normals).frame
     level = BlowUpLevel.from_point_tangents(points, tangent_frames)
 
     # level_results[lvl] = (labels_km, labels_db, labels_hdb, evals)

@@ -1,11 +1,12 @@
 """
-Convert Thingi10K point cloud NPZ files to plain text.
+Convert point cloud NPZ files to plain text.
 
 Each output line has the form: x y z nx ny nz
 
 Usage::
 
-    python npz_to_txt.py                     # converts all NPZ files
+    python npz_to_txt.py                     # converts all NPZ files (thingi10k)
+    python npz_to_txt.py -d threedscans      # converts all NPZ files (threedscans)
     python npz_to_txt.py -p ship coral       # converts only ship.npz and coral.npz
     python npz_to_txt.py -o /tmp/out         # write text files to a custom directory
 """
@@ -21,8 +22,14 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _pointcloud_dir() -> Path:
-    return _repo_root() / "data" / "thingi10k_pointcloud"
+DATASETS = {
+    "thingi10k": "thingi10k_pointcloud",
+    "threedscans": "threedscans_pointcloud",
+}
+
+
+def _pointcloud_dir(dataset: str) -> Path:
+    return _repo_root() / "data" / DATASETS[dataset]
 
 
 def convert(npz_path: Path, out_path: Path) -> int:
@@ -43,7 +50,11 @@ def convert(npz_path: Path, out_path: Path) -> int:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert Thingi10K .npz point clouds to x y z nx ny nz text files"
+        description="Convert .npz point clouds to x y z nx ny nz text files"
+    )
+    parser.add_argument(
+        "-d", "--dataset", choices=list(DATASETS), default="threedscans",
+        help="Dataset to convert (default: threedscans).",
     )
     parser.add_argument(
         "-p", "--pointclouds", nargs="+", default=None,
@@ -55,7 +66,7 @@ def main():
     )
     args = parser.parse_args()
 
-    src = _pointcloud_dir()
+    src = _pointcloud_dir(args.dataset)
     if args.pointclouds is None:
         npz_files = sorted(src.glob("*.npz"))
     else:

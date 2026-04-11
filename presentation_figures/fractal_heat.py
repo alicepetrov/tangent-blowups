@@ -20,9 +20,8 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from scipy import sparse
 from scipy.sparse import linalg as spla
-from scipy.spatial import KDTree
+from scipy.embedded import KDTree
 
-from tangent_blowups.geometry.grassmann import BlownUpSample
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.geometry.kernels import lifted_laplacian
 from tangent_blowups.solvers.linalg import normalize_vectors
@@ -237,7 +236,7 @@ def main():
 
     # --- Euclidean heat (alpha=0, level-0 only) ---
     print("Running heat method (Euclidean, alpha=0)...")
-    bup = BlownUpSample.from_tangents(pts, tans)
+    bup = BlowUpLevel.from_point_tangents(pts, tans)
     _, u_euc, _, _ = lifted_heat_method(
         bup, source_index=src, k=K, h="local", alpha=0.0, t_scale=T_SCALE,
         return_intermediate=True,

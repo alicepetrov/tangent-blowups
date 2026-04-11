@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
-from tangent_blowups.geometry.grassmann import BlownUpSample
+from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.io.load import load_pointcloud
 from tangent_blowups.pointcloud.laplacian import (
     pointcloud_laplacian,
@@ -94,7 +94,7 @@ def compute_laplacians(
     h: float | None = None,
     normalized: bool = True,
     alpha: float = 1.0,
-) -> tuple[np.ndarray, np.ndarray, BlownUpSample]:
+) -> tuple[np.ndarray, np.ndarray, BlowUpLevel]:
     L_pc = pointcloud_laplacian(
         points,
         k=k,
@@ -103,7 +103,7 @@ def compute_laplacians(
         symmetrize=True,
     )
 
-    lifted = BlownUpSample.from_normals(points, normals)
+    lifted = BlowUpLevel.from_normals(points, normals)
     L_lifted = lifted_pointcloud_laplacian(
         lifted,
         k=k,
@@ -139,7 +139,7 @@ def main():
     data_path = _resolve_pointcloud_path(args.pointcloud)
     cloud_label = data_path.stem
     k = 20
-    alpha = 10.0 # Larger alpha emphasizes normal similarity more, smaller alpha emphasizes spatial proximity more.
+    alpha = 1.0
     normalized = True
 
     eig_k = 6
