@@ -29,8 +29,11 @@ from scipy.sparse import linalg as spla
 from scipy.sparse.csgraph import connected_components
 
 from tangent_blowups.io.load import load_pointcloud
-from tangent_blowups.pointcloud import lifted_heat_method
-from tangent_blowups.pointcloud.geodesic_heat import _normals_to_tangent_frames
+from tangent_blowups.pointcloud import lifted_heat_method, precompute_heat_method
+from tangent_blowups.pointcloud.geodesic_heat import (
+    _normals_to_tangent_frames,
+    _auto_estimate_product_bandwidths,
+)
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.solvers.linalg import normalize_vectors
 
@@ -221,6 +224,7 @@ def _anchor_components(L, rhs, W, anchor_index):
 
 def generic_heat_method(
     points, L, M, W, source_index, *, t_scale=15.0, gradient_eps=1e-12,
+    diffusion_steps=1,
 ):
     """Three-step heat method with an arbitrary graph Laplacian."""
     N = len(points)
@@ -233,9 +237,11 @@ def generic_heat_method(
 
     t = _estimate_time_step_pts(points, W, t_scale)
 
-    # Step 1: Heat diffusion  (M + t L) u = delta
+    # Step 1: Heat diffusion  (M + t L)^n u = delta
     A = M + float(t) * L
-    u = spla.spsolve(A.tocsr(), rhs)
+    u = rhs.copy()
+    for _ in range(max(diffusion_steps, 1)):
+        u = spla.spsolve(A.tocsr(), u)
 
     # Step 2: Normalised gradient
     grad_u = _edge_gradient(points, u, W)
@@ -280,9 +286,76 @@ def _dist_to_colors(dist, u, n_points, n_bands=15):
     return smooth, bands
 
 
+_HEAT_CMAPS = ["inferno", "magma", "viridis", "plasma", "coolwarm", "hot", "YlOrRd"]
+
+
+def _heat_to_colors(u, n_points, cmap_name="inferno"):
+    """Colormap the raw heat field u (log-scale for visibility)."""
+    cmap = colormaps[cmap_name]
+    u_abs = np.abs(u)
+    u_max = u_abs.max()
+    if u_max < 1e-30:
+        return np.tile(np.array(cmap(0.0)[:3]), (n_points, 1))
+    # Log-scale: map log(u/u_max) to [0, 1] over ~6 decades
+    log_u = np.log10(np.clip(u_abs / u_max, 1e-6, 1.0))
+    t = (log_u + 6.0) / 6.0  # -6 -> 0, 0 -> 1
+    t = np.clip(t, 0.0, 1.0)
+    colors = cmap(t)[:, :3]
+    return colors
+
+
+# -- Export helpers ----------------------------------------------------------
+def _export_ply(pointcloud_name, pts, normals, panel_name, colors_rgb):
+    """Save a coloured point cloud as ASCII PLY."""
+    N = len(pts)
+    tag = panel_name.replace("/", "_")
+    fname = f"{pointcloud_name}_{tag}.ply"
+    rgb = (np.clip(colors_rgb, 0.0, 1.0) * 255).astype(np.uint8)
+    with open(fname, "w") as f:
+        f.write("ply\n")
+        f.write("format ascii 1.0\n")
+        f.write(f"element vertex {N}\n")
+        f.write("property float x\nproperty float y\nproperty float z\n")
+        f.write("property float nx\nproperty float ny\nproperty float nz\n")
+        f.write("property uchar red\nproperty uchar green\nproperty uchar blue\n")
+        f.write("end_header\n")
+        for i in range(N):
+            f.write(f"{pts[i,0]} {pts[i,1]} {pts[i,2]} "
+                    f"{normals[i,0]} {normals[i,1]} {normals[i,2]} "
+                    f"{rgb[i,0]} {rgb[i,1]} {rgb[i,2]}\n")
+    print(f"Saved {fname}")
+
+
+def _export_colourbar(pointcloud_name, panel_name, *, vmin, vmax,
+                      cmap_name, label, log_scale=False):
+    """Save a standalone colour bar PDF."""
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+
+    cmap = plt.get_cmap(cmap_name)
+    if log_scale:
+        norm = mcolors.LogNorm(vmin=max(vmin, 1e-30), vmax=max(vmax, 1e-30))
+    else:
+        norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+
+    fig, ax = plt.subplots(figsize=(4.5, 0.35))
+    cb = fig.colorbar(
+        plt.cm.ScalarMappable(norm=norm, cmap=cmap),
+        cax=ax, orientation="horizontal",
+    )
+    cb.set_label(label)
+
+    tag = panel_name.replace("/", "_")
+    fname = f"colourbar_{pointcloud_name}_{tag}.pdf"
+    fig.savefig(fname, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {fname}")
+
+
 # -- Per-method geodesic computation -----------------------------------------
 def _compute_lifted(level, points, source_index, *, k, sigma_x, sigma_u,
-                    t_scale, uniform_regression=True, diffusion_steps=1):
+                    t_scale, uniform_regression=True, diffusion_steps=1,
+                    device=None, _precomputed=None):
     print(f"    lifted: sigma_x={sigma_x}, sigma_u={sigma_u}, "
           f"uniform_reg={uniform_regression}, steps={diffusion_steps}")
     dist, u, _, _ = lifted_heat_method(
@@ -291,12 +364,14 @@ def _compute_lifted(level, points, source_index, *, k, sigma_x, sigma_u,
         t_scale=t_scale, return_intermediate=True,
         uniform_regression=uniform_regression,
         diffusion_steps=diffusion_steps,
+        device=device,
+        _precomputed=_precomputed,
     )
     dist = np.maximum(dist - dist[source_index], 0.0)
     return dist, u
 
 
-def _compute_robust(points, source_index, *, k, t_scale):
+def _compute_robust(points, source_index, *, k, t_scale, diffusion_steps=1):
     L, M = robust_laplacian.point_cloud_laplacian(points, n_neighbors=k)
     # Build a k-NN affinity for edge structure (robust_laplacian doesn't expose W)
     tree = cKDTree(points)
@@ -307,7 +382,10 @@ def _compute_robust(points, source_index, *, k, t_scale):
     vals = np.ones(len(rows))
     W = sparse.csr_matrix((vals, (rows, cols)), shape=(len(points), len(points)))
     W = W + W.T
-    dist, u = generic_heat_method(points, L, M, W, source_index, t_scale=t_scale)
+    dist, u = generic_heat_method(
+        points, L, M, W, source_index,
+        t_scale=t_scale, diffusion_steps=diffusion_steps,
+    )
     dist = np.maximum(dist - dist[source_index], 0.0)
     return dist, u
 
@@ -362,23 +440,23 @@ def main():
         help="Name or path of the point cloud (.npz). Omit to list available.",
     )
     parser.add_argument("--k", type=int, default=20)
-    parser.add_argument("--alpha", type=float, default=1.0)
-    parser.add_argument("--levels", type=str, default="both",
+    parser.add_argument("--alpha", type=float, default=5.0)
+    parser.add_argument("--levels", type=str, default="1",
                         choices=["1", "2", "both"],
                         help="Blow-up levels to show: 1, 2, or both.")
-    parser.add_argument("--spread", type=str, default="partial",
-                        choices=["partial", "full", "both"],
-                        help="Which rows to show: partial, full, or both.")
-    parser.add_argument("--sigma-x", type=float, default=0.5)
-    parser.add_argument("--sigma-u", type=float, default=0.5)
+    parser.add_argument("--spread", type=str, default="geodesic",
+                        choices=["geodesic", "heat", "both"],
+                        help="Which rows to show: geodesic, heat, or both.")
+    parser.add_argument("--sigma-x", type=float, default=None,
+                        help="Spatial bandwidth (None = auto-estimate).")
+    parser.add_argument("--sigma-u", type=float, default=None,
+                        help="Angular bandwidth (None = auto-estimate).")
     parser.add_argument("--t-scale-lifted", type=float, default=1.0,
                         help="Time-scale multiplier for the lifted method.")
     parser.add_argument("--t-scale-robust", type=float, default=1.0,
                         help="Time-scale multiplier for the robust method.")
-    parser.add_argument("--partial-steps", type=int, default=1,
-                        help="Diffusion steps for partial spread (top row).")
-    parser.add_argument("--full-steps", type=int, default=20,
-                        help="Diffusion steps for full spread (bottom row).")
+    parser.add_argument("--steps", type=int, default=1,
+                        help="Initial diffusion steps per method.")
     parser.add_argument(
         "--rotate", "-r", type=str, default=None,
         help="Rotation: 'x', 'y', or 'ANGLE,AX,AY,AZ'",
@@ -390,6 +468,11 @@ def main():
     parser.add_argument(
         "--downsample-seed", type=int, default=None,
         help="Optional RNG seed for downsampling.",
+    )
+    parser.add_argument(
+        "--device", type=str, default=None,
+        choices=["cpu", "cuda"],
+        help="Compute device: 'cuda' for GPU, 'cpu' for CPU, or omit for auto-detect.",
     )
     args = parser.parse_args()
 
@@ -437,23 +520,70 @@ def main():
         level2 = _build_level(points, normals, alpha=alpha, k=k, n_lifts=2)
         print(f"Built level-2: N={level2.N}, D={level2.D}, d={level2.d}")
 
+    # -- Per-column parameters --
+    # Each column (lift1, lift2, robust) gets its own t_scale, alpha,
+    # and bandwidths.  Alpha changes require rebuilding the BlowUpLevel.
+    _BW_NAMES = ["tangent", "curvature", "d-curvature"]
+    _N_LIFTS = {"lift1": 1, "lift2": 2}
+
+    def _estimate_bandwidths(lev):
+        """Auto-estimate bandwidths for a level, respecting CLI overrides."""
+        if sigma_x is not None and sigma_u is not None:
+            return sigma_x, [sigma_u] * lev.level
+        auto_sx, auto_su = _auto_estimate_product_bandwidths(lev, k)
+        sx = sigma_x if sigma_x is not None else auto_sx
+        su = [sigma_u] * lev.level if sigma_u is not None else auto_su
+        return sx, su
+
+    def _print_params(col_name, cp):
+        su_parts = []
+        for i, s in enumerate(cp.get("sigma_u", [])):
+            name = _BW_NAMES[i] if i < len(_BW_NAMES) else f"level-{i+1}"
+            su_parts.append(f"{name}={s:.4f}")
+        bw_str = f"  spatial={cp['sigma_x']:.4f}  {', '.join(su_parts)}" if su_parts else ""
+        print(f"Params [{col_name}]: t_scale={cp['t_scale']}  "
+              f"steps={cp['steps']}{bw_str}")
+
+    col_params = {}
+    for col_name, lev in [("lift1", level1), ("lift2", level2)]:
+        if lev is None:
+            continue
+        auto_sx, auto_su = _estimate_bandwidths(lev)
+        col_params[col_name] = {
+            "t_scale": args.t_scale_lifted,
+            "steps": args.steps,
+            "sigma_x": auto_sx,
+            "sigma_u": auto_su,
+        }
+        _print_params(col_name, col_params[col_name])
+    col_params["robust"] = {
+        "t_scale": args.t_scale_robust,
+        "steps": args.steps,
+    }
+
     # -- Build panel grid --
+    # Levels are stored in a mutable dict so they can be rebuilt when
+    # alpha changes.
+    levels = {}
     columns = []
     if level1 is not None:
+        levels["lift1"] = level1
         columns.append(("lift1", level1))
     if level2 is not None:
+        levels["lift2"] = level2
         columns.append(("lift2", level2))
+    levels["robust"] = None
     columns.append(("robust", None))
 
     rows = []
-    if args.spread in ("partial", "both"):
-        rows.append(("partial", args.partial_steps))
-    if args.spread in ("full", "both"):
-        rows.append(("full", args.full_steps))
+    if args.spread in ("geodesic", "both"):
+        rows.append("geodesic")
+    if args.spread in ("heat", "both"):
+        rows.append("heat")
 
     # Panel names: "row/col"
     all_panels = []
-    for row_name, _ in rows:
+    for row_name in rows:
         for col_name, _ in columns:
             all_panels.append(f"{row_name}/{col_name}")
 
@@ -468,7 +598,7 @@ def main():
 
     # Place panels in a grid
     panel_offsets = {}
-    for ri, (row_name, _) in enumerate(rows):
+    for ri, row_name in enumerate(rows):
         for ci, (col_name, _) in enumerate(columns):
             pname = f"{row_name}/{col_name}"
             panel_offsets[pname] = np.array([ci * x_spacing, -ri * y_spacing, 0.0])
@@ -478,39 +608,79 @@ def main():
         "source_index": None,
         "computing": False,
         "show_bands": False,
-        "t_scale_lifted": args.t_scale_lifted,
-        "t_scale_robust": args.t_scale_robust,
         "uniform_regression": False,
-        "partial_steps": args.partial_steps,
-        "full_steps": args.full_steps,
+        "col": col_params,
+        "heat_cmap_idx": 0,
     }
     for p in all_panels:
         state[f"{p}_smooth"] = None
         state[f"{p}_bands"] = None
 
+    # Precomputed cache per lifted column (built on first click)
+    _cache = {}
+
+    def _get_or_build_cache(col_name, level):
+        """Build the precomputed heat-method cache once per lifted column."""
+        cp = state["col"][col_name]
+        cache_key = (col_name, cp["t_scale"],
+                     state["uniform_regression"],
+                     cp["sigma_x"], tuple(cp["sigma_u"]))
+        if cache_key not in _cache:
+            print(f"    [{col_name}] building cache "
+                  f"(t_scale={cp['t_scale']}, "
+                  f"sigma_x={cp['sigma_x']:.4f}, "
+                  f"sigma_u={[round(s,4) for s in cp['sigma_u']]})...")
+            _cache.clear()
+            _cache[cache_key] = precompute_heat_method(
+                level, k=k,
+                sigma_x=cp["sigma_x"],
+                sigma_u=cp["sigma_u"],
+                t_scale=cp["t_scale"],
+                uniform_regression=state["uniform_regression"],
+                device=args.device,
+            )
+            print(f"    [{col_name}] cache ready")
+        return _cache[cache_key]
+
     def _compute_panel(panel_name, source_index):
         row_name, col_name = panel_name.split("/")
-        diff_steps = state["partial_steps"] if row_name == "partial" else state["full_steps"]
-        _, level = [(c, l) for c, l in columns if c == col_name][0]
+        level = levels[col_name]
 
+        cp = state["col"][col_name]
+        print(f"    [{col_name}] steps={cp['steps']}")
         if col_name == "robust":
-            t_s = state["t_scale_robust"]
-            dist, u = _compute_robust(points, source_index, k=k, t_scale=t_s)
+            dist, u = _compute_robust(
+                points, source_index, k=k, t_scale=cp["t_scale"],
+                diffusion_steps=cp["steps"],
+            )
         else:
-            t_s = state["t_scale_lifted"]
+            pre = _get_or_build_cache(col_name, level)
             dist, u = _compute_lifted(
                 level, points, source_index,
-                k=k, sigma_x=sigma_x, sigma_u=sigma_u, t_scale=t_s,
+                k=k, sigma_x=cp["sigma_x"],
+                sigma_u=cp["sigma_u"],
+                t_scale=cp["t_scale"],
                 uniform_regression=state["uniform_regression"],
-                diffusion_steps=diff_steps,
+                diffusion_steps=cp["steps"],
+                device=args.device,
+                _precomputed=pre,
             )
 
-        smooth, bands = _dist_to_colors(dist, u, len(points))
-        state[f"{panel_name}_smooth"] = smooth
-        state[f"{panel_name}_bands"] = bands
+        state[f"{panel_name}_dist"] = dist
+        state[f"{panel_name}_u"] = u
+        if row_name == "heat":
+            cmap_name = _HEAT_CMAPS[state["heat_cmap_idx"]]
+            colors = _heat_to_colors(u, len(points), cmap_name)
+            state[f"{panel_name}_smooth"] = colors
+            state[f"{panel_name}_bands"] = colors
+        else:
+            smooth, bands = _dist_to_colors(dist, u, len(points))
+            state[f"{panel_name}_smooth"] = smooth
+            state[f"{panel_name}_bands"] = bands
+            colors = smooth
 
         cloud = ps.get_point_cloud(panel_name)
-        cloud.add_color_quantity("geodesic", smooth, enabled=True)
+        cloud.add_color_quantity("geodesic", colors, enabled=True)
 
         # Source marker
         src_tag = f"src_{panel_name.replace('/', '_')}"
@@ -536,27 +706,42 @@ def main():
             idx = state["source_index"]
             psim.TextUnformatted(f"Source: {idx}  ({points[idx].round(2)})")
 
-        _, state["t_scale_lifted"] = psim.InputFloat(
-            "t_scale (lifted)", state["t_scale_lifted"],
-        )
-        _, state["t_scale_robust"] = psim.InputFloat(
-            "t_scale (robust)", state["t_scale_robust"],
-        )
         _, state["uniform_regression"] = psim.Checkbox(
             "Uniform regression (w=1)", state["uniform_regression"],
         )
-        if any(r == "partial" for r, _ in rows):
-            _, state["partial_steps"] = psim.InputInt(
-                "Partial steps", state["partial_steps"],
-            )
-        if any(r == "full" for r, _ in rows):
-            _, state["full_steps"] = psim.InputInt(
-                "Full steps", state["full_steps"],
-            )
+
+        # -- Per-column controls (steps, t_scale, bandwidths) --
+        _ANGULAR_LABELS = ["tangent", "curvature", "d-curvature"]
+        psim.Separator()
+        for col_name, _ in columns:
+            cp = state["col"][col_name]
+            if psim.TreeNode(col_name):
+                _, cp["steps"] = psim.InputInt(
+                    f"steps##{col_name}", cp["steps"],
+                )
+                _, cp["t_scale"] = psim.InputFloat(
+                    f"t_scale##{col_name}", cp["t_scale"],
+                )
+                if col_name != "robust":
+                    changed_sx, new_sx = psim.InputFloat(
+                        f"spatial##{col_name}", cp["sigma_x"],
+                    )
+                    if changed_sx and new_sx > 0:
+                        cp["sigma_x"] = new_sx
+                    for i, s in enumerate(cp["sigma_u"]):
+                        label = _ANGULAR_LABELS[i] if i < len(_ANGULAR_LABELS) else f"level-{i+1}"
+                        changed_su, new_su = psim.InputFloat(
+                            f"{label}##{col_name}", s,
+                        )
+                        if changed_su and new_su > 0:
+                            cp["sigma_u"][i] = new_su
+                psim.TreePop()
+        psim.Separator()
 
         if have:
-            if psim.Button("Compute geodesics"):
-                state["source_index"] = pick.local_index
+            state["source_index"] = pick.local_index
+        if state["source_index"] is not None:
+            if psim.Button("Compute"):
                 state["computing"] = True
 
         # Level-set toggle
@@ -574,6 +759,26 @@ def main():
                             "geodesic", c, enabled=True,
                         )
 
+        # Heat colormap selector
+        heat_panels = [p for p in all_panels if p.startswith("heat/")]
+        has_heat = any(state.get(f"{p}_u") is not None for p in heat_panels)
+        if heat_panels and has_heat:
+            changed_cm, new_idx = psim.Combo(
+                "Heat colormap", state["heat_cmap_idx"], _HEAT_CMAPS,
+            )
+            if changed_cm:
+                state["heat_cmap_idx"] = new_idx
+                cmap_name = _HEAT_CMAPS[new_idx]
+                for p in heat_panels:
+                    u_cached = state.get(f"{p}_u")
+                    if u_cached is not None:
+                        colors = _heat_to_colors(u_cached, len(points), cmap_name)
+                        state[f"{p}_smooth"] = colors
+                        state[f"{p}_bands"] = colors
+                        ps.get_point_cloud(p).add_color_quantity(
+                            "geodesic", colors, enabled=True,
+                        )
+
         if state["computing"]:
             state["computing"] = False
             idx = state["source_index"]
@@ -588,6 +793,36 @@ def main():
             ps.screenshot(fname, transparent_bg=False)
             print(f"Saved {fname}")
 
+        if has_results and psim.Button("Export PLY + colorbar"):
+            for p in all_panels:
+                sm = state[f"{p}_smooth"]
+                if sm is None:
+                    continue
+                _export_ply(args.pointcloud, points, normals, p, sm)
+                row_name = p.split("/")[0]
+                if row_name == "heat":
+                    u_p = state.get(f"{p}_u")
+                    if u_p is not None:
+                        u_abs = np.abs(u_p)
+                        _export_colourbar(
+                            args.pointcloud, p,
+                            vmin=u_abs[u_abs > 0].min() if (u_abs > 0).any() else 1e-6,
+                            vmax=u_abs.max(),
+                            cmap_name=_HEAT_CMAPS[state["heat_cmap_idx"]],
+                            label="Heat $u$",
+                            log_scale=True,
+                        )
+                else:
+                    dist_p = state.get(f"{p}_dist")
+                    if dist_p is not None:
+                        _export_colourbar(
+                            args.pointcloud, p,
+                            vmin=0.0, vmax=float(np.percentile(
+                                dist_p[dist_p > 0], 99)) if (dist_p > 0).any() else 1.0,
+                            cmap_name="magma",
+                            label="Geodesic distance",
+                        )
+
     # -- Polyscope setup --
     ps.init()
     ps.set_ground_plane_mode("shadow_only")
@@ -599,8 +834,7 @@ def main():
         cloud.set_color((0.7, 0.7, 0.7))
 
     col_labels = [c for c, _ in columns]
-    row_labels = [f"{r} ({s} steps)" for r, s in rows]
-    print(f"Grid: {' | '.join(col_labels)}  x  {' / '.join(row_labels)}")
+    print(f"Grid: {' | '.join(col_labels)}  x  {' / '.join(rows)}")
     ps.set_user_callback(callback)
     ps.show()
 

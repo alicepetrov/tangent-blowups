@@ -42,6 +42,25 @@ from ..geometry.kernels import (
 )
 
 
+def _resolve_device(device: str | None) -> str:
+    """Resolve device string: None -> auto-detect, else validate."""
+    if device is None:
+        try:
+            import torch
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            return "cpu"
+    return device
+
+
+def _gpu_available() -> bool:
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
+
+
 
 def _normals_to_tangent_frames(normals: np.ndarray) -> np.ndarray:
     """Build an orthonormal 2-frame from unit normals via Gram-Schmidt.
@@ -53,24 +72,30 @@ def _normals_to_tangent_frames(normals: np.ndarray) -> np.ndarray:
         (N, 3, 2) orthonormal tangent frames.
     """
     N = normals.shape[0]
-    frames = np.zeros((N, 3, 2), dtype=float)
-    for i in range(N):
-        n = normals[i]
-        ax = int(np.argmin(np.abs(n)))
-        seed = np.zeros(3)
-        seed[ax] = 1.0
-        t1 = np.cross(n, seed)
-        norm1 = np.linalg.norm(t1)
-        if norm1 < 1e-12:
-            seed = np.zeros(3)
-            seed[(ax + 1) % 3] = 1.0
-            t1 = np.cross(n, seed)
-            norm1 = np.linalg.norm(t1)
-        t1 /= norm1
-        t2 = np.cross(n, t1)
-        t2 /= np.linalg.norm(t2)
-        frames[i, :, 0] = t1
-        frames[i, :, 1] = t2
+    # Pick seed axis with smallest |n| component for numerical stability
+    ax = np.argmin(np.abs(normals), axis=1)         # (N,)
+    seed = np.zeros((N, 3), dtype=float)
+    seed[np.arange(N), ax] = 1.0
+
+    t1 = np.cross(normals, seed)                    # (N, 3)
+    norms1 = np.linalg.norm(t1, axis=1, keepdims=True)
+
+    # Fallback for degenerate cases (nearly zero cross product)
+    degen = (norms1.ravel() < 1e-12)
+    if degen.any():
+        ax2 = (ax[degen] + 1) % 3
+        seed2 = np.zeros((int(degen.sum()), 3), dtype=float)
+        seed2[np.arange(len(ax2)), ax2] = 1.0
+        t1[degen] = np.cross(normals[degen], seed2)
+        norms1[degen] = np.linalg.norm(t1[degen], axis=1, keepdims=True)
+
+    t1 /= norms1
+    t2 = np.cross(normals, t1)
+    t2 /= np.linalg.norm(t2, axis=1, keepdims=True)
+
+    frames = np.empty((N, 3, 2), dtype=float)
+    frames[:, :, 0] = t1
+    frames[:, :, 1] = t2
     return frames
 
 
@@ -157,11 +182,19 @@ def _estimate_mass_matrix(
     sorted_dist = dist[order]
     splits = np.searchsorted(sorted_rows, np.arange(N + 1))
 
+    # Vectorised median: find max neighbours-per-vertex, pad into a
+    # regular (N, max_k) array, then take np.median along axis=1.
+    counts = np.diff(splits)
+    max_k = int(counts.max()) if counts.size > 0 else 0
     r_k = np.zeros(N, dtype=float)
-    for i in range(N):
-        lo, hi = splits[i], splits[i + 1]
-        if hi > lo:
-            r_k[i] = np.median(sorted_dist[lo:hi])
+    if max_k > 0:
+        padded = np.full((N, max_k), np.nan, dtype=float)
+        for i in range(N):
+            lo, hi = splits[i], splits[i + 1]
+            if hi > lo:
+                padded[i, :hi - lo] = sorted_dist[lo:hi]
+        r_k = np.nanmedian(padded, axis=1)
+        r_k = np.nan_to_num(r_k, nan=0.0)
 
     # Count neighbours per vertex (= k for interior points)
     k_per_vertex = np.bincount(rows, minlength=N).astype(float)
@@ -291,14 +324,24 @@ def _coerce_to_level(
 def _auto_estimate_product_bandwidths(
     level: BlowUpLevel,
     k: int,
-) -> tuple[float, float]:
-    """Estimate sigma_x and sigma_u from median k-NN distances.
+) -> tuple[float, list[float]]:
+    """Estimate sigma_x and per-lift sigma_u from median k-NN distances.
 
-    Builds a k-NN graph in the Chordal-Sasaki embedding, then computes
-    the median spatial and angular neighbour distances separately.
+    The product metric at level ell decomposes into ell + 1 factors:
+    spatial + one per embedded projector block (one per lift).  This
+    function returns one angular bandwidth per factor of the product
+    metric:
+
+    - Level 1 (1 lift):  ``[sigma_tangent]``
+    - Level 2 (2 lifts): ``[sigma_tangent, sigma_curvature]``
+
+    Each bandwidth is the median k-NN distance in the corresponding
+    block, scaled by ``sqrt(n_factors)`` to compensate for the
+    multiplicative effect of multiple kernel factors.
 
     Returns:
-        (sigma_x, sigma_u) — median spatial distance, median angular distance.
+        ``(sigma_x, sigma_u_list)`` — spatial bandwidth and a list of
+        ``level.level`` angular bandwidths (one per lift).
     """
     rows, cols, _ = _knn_edges(level.embedded, k)
 
@@ -309,16 +352,19 @@ def _auto_estimate_product_bandwidths(
     dist_x = dist_x[dist_x > 0.0]
     sigma_x = float(np.median(dist_x)) if dist_x.size > 0 else 1.0
 
-    # Angular distances (chordal: ||P_i - P_j||_F)
-    U = level.frame  # (N, D, d)
-    M = np.einsum("eka,ekb->eab", U[rows], U[cols])   # (E, d, d)
-    inner_sq = np.einsum("eab,eab->e", M, M)
-    proj_dist2 = np.clip(2.0 * level.d - 2.0 * inner_sq, 0.0, None)
-    dist_u = np.sqrt(proj_dist2)
-    dist_u = dist_u[dist_u > 0.0]
-    sigma_u = float(np.median(dist_u)) if dist_u.size > 0 else 1.0
+    # One angular bandwidth per embedded projector block (one per lift)
+    sigmas_u: list[float] = []
+    for _m, (start, ncols, scale) in enumerate(level._proj_blocks):
+        diff = (level.embedded[rows, start:start + ncols]
+                - level.embedded[cols, start:start + ncols])
+        raw_dist = np.sqrt(np.einsum("ij,ij->i", diff, diff))
+        true_dist = raw_dist / scale
+        true_dist = true_dist[true_dist > 0.0]
+        sigmas_u.append(
+            float(np.median(true_dist)) if true_dist.size > 0 else 1.0
+        )
 
-    return sigma_x, sigma_u
+    return sigma_x, sigmas_u
 
 
 def lifted_heat_method(
@@ -342,6 +388,8 @@ def lifted_heat_method(
     gradient_lam: float = 0.0,
     anchor_index: Optional[int] = None,
     return_intermediate: bool = False,
+    device: str | None = None,
+    _precomputed: dict | None = None,
     # Legacy parameters — accepted for backward compatibility
     radius: float | None = None,  # noqa: ARG001
     subspace_metric: str = "chordal",  # noqa: ARG001
@@ -421,11 +469,23 @@ def lifted_heat_method(
         gradient_lam: Tikhonov regularisation for gradient/divergence.
         anchor_index: Dirichlet anchor for Poisson solve (default: first source).
         return_intermediate: If True, return ``(phi, u, X, div)``.
+        device: Compute device.  ``"cuda"`` uses GPU-accelerated sparse
+            solvers and edge operations; ``"cpu"`` uses the original
+            numpy/scipy path.  ``None`` (default) auto-detects CUDA.
+        _precomputed: Optional dict of cached intermediate results from a
+            previous call.  When provided, the affinity matrix, Laplacian,
+            mass matrix, heat operator, and edge cache are reused instead
+            of recomputed.  Call :func:`precompute_heat_method` to build
+            this dict.
 
     Returns:
         Geodesic distances ``phi`` (shape ``(N,)``), or
         ``(phi, u, X, div)`` if ``return_intermediate=True``.
     """
+    # --- Resolve device ---
+    use_device = _resolve_device(device)
+    use_gpu = use_device == "cuda" and _gpu_available()
+
     # --- Resolve backward-compatible parameter aliases ---
     use_normalized = laplacian_normalized
     if normalized is not None:
@@ -448,56 +508,91 @@ def lifted_heat_method(
     if anchor_index is None:
         anchor_index = int(src_idx[0])
 
-    # --- Build affinity matrix ---
-    if kernel == "product":
-        sx, su = sigma_x, sigma_u
-        if sx is None or su is None:
-            auto_sx, auto_su = _auto_estimate_product_bandwidths(level, k_eff)
-            if sx is None:
-                sx = auto_sx
-            if su is None:
-                su = auto_su
-        W = product_affinity(level, sx, su, k=k_eff, symmetrize=symmetrize)
-    elif kernel == "self-tuning":
-        W = lifted_affinity(level, k=k_eff, h=h, symmetrize=symmetrize)
+    # --- Build or reuse precomputed data ---
+    if _precomputed is not None:
+        L = _precomputed["L"]
+        W = _precomputed["W"]
+        W_reg = _precomputed["W_reg"]
+        A = _precomputed["A"]
+        edge_cache = _precomputed.get("edge_cache")
+        n_comp = _precomputed["n_comp"]
+        comp_labels = _precomputed["comp_labels"]
     else:
-        raise ValueError(f"Unknown kernel type: {kernel!r}")
+        if kernel == "product":
+            sx, su = sigma_x, sigma_u
+            if sx is None or su is None:
+                auto_sx, auto_su = _auto_estimate_product_bandwidths(
+                    level, k_eff,
+                )
+                if sx is None:
+                    sx = auto_sx
+                if su is None:
+                    su = auto_su
+            W = product_affinity(
+                level, sx, su, k=k_eff, symmetrize=symmetrize,
+                device=use_device if use_gpu else "cpu",
+            )
+        elif kernel == "self-tuning":
+            W = lifted_affinity(level, k=k_eff, h=h, symmetrize=symmetrize)
+        else:
+            raise ValueError(f"Unknown kernel type: {kernel!r}")
 
-    L, W, _ = affinity_to_laplacian(W, normalized=use_normalized)
-    W = W.tocsr()
+        L, W, _ = affinity_to_laplacian(W, normalized=use_normalized)
+        W = W.tocsr()
 
-    # Regression weights: optionally binarise W for gradient/divergence
-    # while keeping the kernel-weighted W for the Laplacian.
-    if uniform_regression:
-        W_reg = W.copy()
-        W_reg.data[:] = 1.0
-    else:
-        W_reg = W
+        if uniform_regression:
+            W_reg = W.copy()
+            W_reg.data[:] = 1.0
+        else:
+            W_reg = W
 
-    # --- Estimate mass matrix and time step ---
-    mass = _estimate_mass_matrix(level, W)
+        mass = _estimate_mass_matrix(level, W)
 
-    if t is None:
-        t = _estimate_time_step(level, W, t_scale)
+        if t is None:
+            t = _estimate_time_step(level, W, t_scale)
+
+        M = sparse.diags(mass, format="csr")
+        A = M + float(t) * L
+        n_comp, comp_labels = connected_components(
+            W, directed=False, connection="weak",
+        )
+
+        if use_gpu:
+            from ..geometry._gpu_ops import precompute_edges_gpu
+            edge_cache = precompute_edges_gpu(level, W_reg, gradient_lam)
+        else:
+            edge_cache = None
 
     # --- Step 1: Heat diffusion  (M + tL)^n u = e_i ---
     # The Dirac delta as a FEM functional gives rhs = e_i (indicator at
     # source), matching geometry-central's implementation exactly.
     # Multiple steps spread heat farther without increasing t.
-    M = sparse.diags(mass, format="csr")
     u = np.zeros(n_points, dtype=float)
     u[src_idx] = 1.0
 
-    A = M + float(t) * L
-    for _ in range(max(diffusion_steps, 1)):
-        u = spla.spsolve(A, u)
+    if use_gpu:
+        from ..solvers.gpu_sparse import sparse_solve_gpu
+        from ..geometry._gpu_ops import (
+            lifted_gradient_gpu,
+            edge_divergence_gpu,
+        )
+        for _ in range(max(diffusion_steps, 1)):
+            u = sparse_solve_gpu(A, u, x0_numpy=u)
+    else:
+        for _ in range(max(diffusion_steps, 1)):
+            u = spla.spsolve(A, u)
 
     # --- Step 2: Normalised gradient  X = -grad(u) / |grad(u)| ---
     # The divergence operator uses only the spatial (first n_orig) components
     # of X, so we must normalise the spatial part specifically — otherwise
     # the unit-length constraint in D dimensions leaves the spatial
     # projection with norm << 1, systematically deflating the divergence.
-    grad_u = lifted_gradient(level, u, W_reg, lam=gradient_lam)
+    if use_gpu:
+        grad_u = lifted_gradient_gpu(
+            level, u, W_reg, lam=gradient_lam, _edge_cache=edge_cache,
+        )
+    else:
+        grad_u = lifted_gradient(level, u, W_reg, lam=gradient_lam)
     n_orig = level.n_orig
     grad_spatial = grad_u[:, :n_orig]
     grad_spatial_norms = np.linalg.norm(grad_spatial, axis=1)
@@ -507,7 +602,10 @@ def lifted_heat_method(
 
     # --- Step 3: Poisson solve  L phi = -div_edge(X) ---
     # Use edge-compatible divergence so the RHS lies in the range of L.
-    div_X = _edge_divergence(level, X, W_reg)
+    if use_gpu:
+        div_X = edge_divergence_gpu(level, X, W_reg)
+    else:
+        div_X = _edge_divergence(level, X, W_reg)
 
     L_poisson, div_rhs = _apply_dirichlet_constraint(
         L,
@@ -518,7 +616,6 @@ def lifted_heat_method(
 
     # When tight kernels create disconnected components, anchor one node
     # per extra component so the Poisson system is non-singular.
-    n_comp, comp_labels = connected_components(W, directed=False, connection="weak")
     if n_comp > 1:
         src_label = comp_labels[anchor_index]
         L_poisson = L_poisson.tolil()
@@ -531,11 +628,98 @@ def lifted_heat_method(
             div_rhs[idx] = 0.0
         L_poisson = L_poisson.tocsr()
 
-    phi = spla.spsolve(L_poisson, div_rhs)
+    if use_gpu:
+        phi = sparse_solve_gpu(L_poisson, div_rhs)
+    else:
+        phi = spla.spsolve(L_poisson, div_rhs)
 
     if return_intermediate:
         return phi, u, X, div_X
     return phi
 
 
-__all__ = ["lifted_heat_method"]
+def precompute_heat_method(
+    level: BlowUpLevel,
+    *,
+    k: int = 20,
+    kernel: Literal["product", "self-tuning"] = "product",
+    uniform_regression: bool = False,
+    sigma_x: float | None = None,
+    sigma_u: float | list[float] | np.ndarray | None = None,
+    h: float | Literal["local"] | None = "local",
+    laplacian_normalized: bool = False,
+    symmetrize: bool = True,
+    t: float | None = None,
+    t_scale: float = 1.0,
+    gradient_lam: float = 0.0,
+    device: str | None = None,
+) -> dict:
+    """Precompute the static parts of the heat method for repeated queries.
+
+    Returns a dict that can be passed as ``_precomputed`` to
+    :func:`lifted_heat_method` to skip affinity, Laplacian, mass matrix,
+    and edge precomputation on each call.
+
+    Args:
+        level:  BlowUpLevel (any level).
+        k, kernel, sigma_x, sigma_u, h, laplacian_normalized, symmetrize,
+        t, t_scale, gradient_lam, device:
+            Same meaning as in :func:`lifted_heat_method`.
+
+    Returns:
+        Dict of cached arrays (L, W, W_reg, A, edge_cache, etc.).
+    """
+    use_device = _resolve_device(device)
+    use_gpu = use_device == "cuda" and _gpu_available()
+    use_normalized = laplacian_normalized
+
+    if kernel == "product":
+        sx, su = sigma_x, sigma_u
+        if sx is None or su is None:
+            auto_sx, auto_su = _auto_estimate_product_bandwidths(level, k)
+            if sx is None:
+                sx = auto_sx
+            if su is None:
+                su = auto_su
+        W = product_affinity(
+            level, sx, su, k=k, symmetrize=symmetrize,
+            device=use_device if use_gpu else "cpu",
+        )
+    elif kernel == "self-tuning":
+        W = lifted_affinity(level, k=k, h=h, symmetrize=symmetrize)
+    else:
+        raise ValueError(f"Unknown kernel type: {kernel!r}")
+
+    L, W, _ = affinity_to_laplacian(W, normalized=use_normalized)
+    W = W.tocsr()
+
+    if uniform_regression:
+        W_reg = W.copy()
+        W_reg.data[:] = 1.0
+    else:
+        W_reg = W
+
+    mass = _estimate_mass_matrix(level, W)
+    if t is None:
+        t = _estimate_time_step(level, W, t_scale)
+
+    M = sparse.diags(mass, format="csr")
+    A = M + float(t) * L
+
+    n_comp, comp_labels = connected_components(
+        W, directed=False, connection="weak",
+    )
+
+    edge_cache = None
+    if use_gpu:
+        from ..geometry._gpu_ops import precompute_edges_gpu
+        edge_cache = precompute_edges_gpu(level, W_reg, gradient_lam)
+
+    return dict(
+        L=L, W=W, W_reg=W_reg, A=A,
+        edge_cache=edge_cache,
+        n_comp=n_comp, comp_labels=comp_labels,
+    )
+
+
+__all__ = ["lifted_heat_method", "precompute_heat_method"]

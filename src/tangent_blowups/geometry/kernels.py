@@ -59,14 +59,28 @@ from .weight_config import WeightConfig, product_weights
 def _knn_edges(
     embed: np.ndarray,
     k: int,
+    *,
+    device: str = "cpu",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Build a directed k-NN graph in Euclidean embedding space.
+
+    Args:
+        embed:  (N, D) point embeddings.
+        k:      Number of nearest neighbours.
+        device: ``"cuda"`` uses GPU brute-force; ``"cpu"`` uses cKDTree.
 
     Returns:
         rows, cols:  Edge indices, each of length N*k.
         dist2:       Squared distances along each edge.
     """
+    if device == "cuda":
+        try:
+            from ._gpu_ops import knn_edges_gpu
+            return knn_edges_gpu(embed, k)
+        except ImportError:
+            pass
+
     N = embed.shape[0]
     k_eff = min(k + 1, N)   # +1 because query includes the point itself
     tree = cKDTree(embed)
@@ -267,6 +281,7 @@ def product_affinity(
     *,
     k: int = 20,
     symmetrize: bool = True,
+    device: str = "cpu",
 ) -> sparse.csr_matrix:
     """
     Multi-scale product-kernel affinity with independent spatial and angular
@@ -309,18 +324,18 @@ def product_affinity(
     if sigma_x <= 0.0:
         raise ValueError(f"sigma_x must be positive, got {sigma_x}.")
 
-    n_angular = level.level + 1   # number of angular factors (levels 0..ell)
+    n_lifts = level.level   # one angular factor per lift (= len(_proj_blocks))
     if isinstance(sigma_u, (int, float)):
         sigma_u_val = float(sigma_u)
         if sigma_u_val <= 0.0:
             raise ValueError(f"sigma_u must be positive, got {sigma_u_val}.")
-        sigmas = [sigma_u_val] * n_angular
+        sigmas = [sigma_u_val] * max(n_lifts, 1)
     else:
         sigmas = [float(s) for s in sigma_u]
-        if len(sigmas) != n_angular:
+        if len(sigmas) != n_lifts:
             raise ValueError(
                 f"sigma_u sequence has length {len(sigmas)}, expected "
-                f"{n_angular} (one per projector level 0..{level.level})."
+                f"{n_lifts} (one per lift)."
             )
         if any(s <= 0.0 for s in sigmas):
             raise ValueError("All sigma_u entries must be positive.")
@@ -329,8 +344,22 @@ def product_affinity(
     if N == 0:
         return sparse.csr_matrix((0, 0), dtype=float)
 
-    # k-NN in the Chordal-Sasaki embedded space
-    rows, cols, dist2_embed = _knn_edges(level.embedded, k)
+    # k-NN in the Chordal-Sasaki embedded space (always CPU -- cKDTree is
+    # faster than brute-force GPU for moderate D)
+    rows, cols, dist2_embed = _knn_edges(level.embedded, k, device="cpu")
+
+    # --- GPU fast path for weight computation ---
+    if device == "cuda":
+        try:
+            from ._gpu_ops import product_affinity_gpu
+            weights = product_affinity_gpu(
+                level, sigma_x, sigmas, k, rows, cols,
+            )
+            return _assemble_affinity(
+                N, rows, cols, weights, symmetrize=symmetrize,
+            )
+        except ImportError:
+            pass
 
     # --- Spatial factor: ||x_i - x_j||^2 in the ORIGINAL ambient space ---
     positions = level.embedded[:, :level.n_orig]
@@ -338,9 +367,10 @@ def product_affinity(
     dist2_spatial = np.einsum("ij,ij->i", dx, dx)
     weights = np.exp(-dist2_spatial / (sigma_x * sigma_x))
 
-    # --- Angular factors for levels 0..ell-1 (from embedded blocks) ---
-    # Process large blocks in column chunks to avoid OOM at level 2+
-    # (e.g. level-1 projector block has D^2 = 144 columns at level 2).
+    # --- Angular factors: one per lift (from the product metric) ---
+    # Each _proj_block corresponds to one factor of the product space.
+    # At level ell the embedding is [x, alpha*vec(P^0), ..., alpha*vec(P^{ell-1})]
+    # and the product metric decomposes into ell+1 terms (spatial + ell angular).
     _BLOCK_CHUNK = 32
     E = rows.shape[0]
     for m, (start, ncols, scale) in enumerate(level._proj_blocks):
@@ -353,14 +383,6 @@ def product_affinity(
         # scaled_dist2 = scale^2 * ||P^(m)_i - P^(m)_j||_F^2
         denom = scale * scale * sigmas[m] * sigmas[m]
         weights *= np.exp(-scaled_dist2 / denom)
-
-    # --- Angular factor for current level ell (from live projectors) ---
-    # Use chordal identity: ||P_i - P_j||_F^2 = 2d - 2||U_i^T U_j||_F^2
-    U = level.frame                                    # (N, D, d)
-    M = np.einsum("eka,ekb->eab", U[rows], U[cols])   # (E, d, d): U_i^T U_j
-    inner_sq = np.einsum("eab,eab->e", M, M)          # ||U_i^T U_j||_F^2
-    proj_dist2 = 2.0 * level.d - 2.0 * inner_sq
-    weights *= np.exp(-proj_dist2 / (sigmas[-1] * sigmas[-1]))
 
     return _assemble_affinity(N, rows, cols, weights, symmetrize=symmetrize)
 
