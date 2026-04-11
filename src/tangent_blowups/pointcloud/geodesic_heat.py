@@ -328,6 +328,8 @@ def lifted_heat_method(
     source_index: int | Sequence[int] | np.ndarray = 0,
     k: int | None = 20,
     kernel: Literal["product", "self-tuning"] = "product",
+    uniform_regression: bool = False,
+    diffusion_steps: int = 1,
     sigma_x: float | None = None,
     sigma_u: float | list[float] | np.ndarray | None = None,
     h: float | Literal["local"] | None = "local",
@@ -393,6 +395,14 @@ def lifted_heat_method(
               on the Chordal-Sasaki embedding.  Uses the ``h`` parameter.
               NOT guaranteed PSD.
 
+        uniform_regression: If True, the gradient and divergence use uniform
+            weights (w_ij = 1) while the Laplacian keeps the kernel-weighted
+            affinity.  Default False (gradient/divergence use the same W as
+            the Laplacian).
+        diffusion_steps: Number of implicit diffusion steps in Step 1.
+            Solves ``(M + tL) u = rhs`` iteratively, feeding each output as
+            the next RHS.  Equivalent to ``(M + tL)^n u = delta``, spreading
+            heat farther without increasing t.  Default 1.
         sigma_x: Spatial bandwidth for the product kernel (> 0, or None for
             auto-estimation).  Ignored when ``kernel="self-tuning"``.
         sigma_u: Angular bandwidth(s) for the product kernel.  A single float
@@ -456,28 +466,38 @@ def lifted_heat_method(
     L, W, _ = affinity_to_laplacian(W, normalized=use_normalized)
     W = W.tocsr()
 
+    # Regression weights: optionally binarise W for gradient/divergence
+    # while keeping the kernel-weighted W for the Laplacian.
+    if uniform_regression:
+        W_reg = W.copy()
+        W_reg.data[:] = 1.0
+    else:
+        W_reg = W
+
     # --- Estimate mass matrix and time step ---
     mass = _estimate_mass_matrix(level, W)
 
     if t is None:
         t = _estimate_time_step(level, W, t_scale)
 
-    # --- Step 1: Heat diffusion  (M + tL) u = e_i ---
+    # --- Step 1: Heat diffusion  (M + tL)^n u = e_i ---
     # The Dirac delta as a FEM functional gives rhs = e_i (indicator at
     # source), matching geometry-central's implementation exactly.
+    # Multiple steps spread heat farther without increasing t.
     M = sparse.diags(mass, format="csr")
-    rhs = np.zeros(n_points, dtype=float)
-    rhs[src_idx] = 1.0
+    u = np.zeros(n_points, dtype=float)
+    u[src_idx] = 1.0
 
     A = M + float(t) * L
-    u = spla.spsolve(A, rhs)
+    for _ in range(max(diffusion_steps, 1)):
+        u = spla.spsolve(A, u)
 
     # --- Step 2: Normalised gradient  X = -grad(u) / |grad(u)| ---
     # The divergence operator uses only the spatial (first n_orig) components
     # of X, so we must normalise the spatial part specifically — otherwise
     # the unit-length constraint in D dimensions leaves the spatial
     # projection with norm << 1, systematically deflating the divergence.
-    grad_u = lifted_gradient(level, u, W, lam=gradient_lam)
+    grad_u = lifted_gradient(level, u, W_reg, lam=gradient_lam)
     n_orig = level.n_orig
     grad_spatial = grad_u[:, :n_orig]
     grad_spatial_norms = np.linalg.norm(grad_spatial, axis=1)
@@ -487,7 +507,7 @@ def lifted_heat_method(
 
     # --- Step 3: Poisson solve  L phi = -div_edge(X) ---
     # Use edge-compatible divergence so the RHS lies in the range of L.
-    div_X = _edge_divergence(level, X, W)
+    div_X = _edge_divergence(level, X, W_reg)
 
     L_poisson, div_rhs = _apply_dirichlet_constraint(
         L,

@@ -42,6 +42,28 @@ from scipy.spatial import cKDTree
 # Utility
 # ---------------------------------------------------------------------------
 
+def _build_vech_w_duplication(d: int) -> np.ndarray:
+    """
+    Weighted duplication matrix D_w of shape (d², d*(d+1)//2).
+
+    Maps vech_w(B) → vec(B) for a symmetric d×d matrix B, using the
+    norm-preserving convention: diagonal entries stored as-is,
+    off-diagonal entries scaled by √2.  Satisfies D_w^T D_w = I_m.
+    """
+    m = d * (d + 1) // 2
+    D_w = np.zeros((d * d, m))
+    col = 0
+    for a in range(d):
+        for b in range(a, d):
+            if a == b:
+                D_w[a * d + a, col] = 1.0
+            else:
+                D_w[a * d + b, col] = 1.0 / np.sqrt(2.0)
+                D_w[b * d + a, col] = 1.0 / np.sqrt(2.0)
+            col += 1
+    return D_w
+
+
 def ambient_dim_sequence(n: int, num_levels: int) -> list[int]:
     """
     Returns the ambient dimension at each blow-up level.
@@ -295,9 +317,11 @@ class BlowUpLevel:
         TWT = wt.T @ t                             # (d, d)
         TWc = wt.T @ c_flat                        # (d, n_comp*d)
         # Scale ridge relative to data so shrinkage is independent of
-        # bandwidth / effective sample size.
+        # bandwidth / effective sample size.  Absolute floor ensures
+        # invertibility even when lam=0.
         tr_TWT = np.trace(TWT)
         ridge = lam * (tr_TWT / d) if tr_TWT > 0 else lam
+        ridge = max(ridge, 1e-12 * (tr_TWT / d if tr_TWT > 0 else 1.0))
         reg = TWT + ridge * np.eye(d)
 
         try:
@@ -306,6 +330,61 @@ class BlowUpLevel:
             return np.zeros((n_comp * d, d), dtype=float)
 
         return B_flat_T.T                          # (n_comp*d, d)
+
+    @staticmethod
+    def _fit_curvature_symmetric(
+        t: np.ndarray,      # (k, d)     intrinsic displacements
+        C: np.ndarray,      # (k, m, d)  Grassmann tangent coords  (m = n_comp)
+        w: np.ndarray,      # (k,)       non-negative weights
+        d: int,
+        n_comp: int,
+        lam: float,
+        D_w: np.ndarray,    # (d², d*(d+1)//2)  weighted duplication matrix
+    ) -> np.ndarray:
+        """
+        Symmetric-constrained weighted ridge regression for B_i.
+
+        Reparametrises each d×d block B_α via vech_w (its d(d+1)/2 unique
+        entries with √2 scaling on off-diagonals) so the solution is
+        symmetric by construction.  Solves:
+
+          (D_w^T (T^T W T ⊗ I_d) D_w + ridge I_m) s_α = D_w^T vec(R_α)
+
+        Returns B_flat of shape (n_comp*d, d), or zeros on failure.
+        """
+        if t.shape[0] == 0 or n_comp == 0:
+            return np.zeros((n_comp * d, d), dtype=float)
+
+        m = d * (d + 1) // 2
+
+        c_flat = C.reshape(len(t), n_comp * d)     # (k, n_comp*d)
+        wt = w[:, np.newaxis] * t                   # (k, d)
+        TWT = wt.T @ t                              # (d, d)
+        TWc = wt.T @ c_flat                         # (d, n_comp*d)
+
+        tr_TWT = np.trace(TWT)
+        ridge = lam * (tr_TWT / d) if tr_TWT > 0 else lam
+        ridge = max(ridge, 1e-12 * (tr_TWT / d if tr_TWT > 0 else 1.0))
+
+        # Gram matrix in vech_w space: G = D_w^T (TWT ⊗ I_d) D_w
+        G = D_w.T @ np.kron(TWT, np.eye(d)) @ D_w  # (m, m)
+        reg = G + ridge * np.eye(m)
+
+        # RHS for each α:  D_w^T vec(R_α)
+        # TWc reshaped gives R_α blocks of shape (d, d)
+        R_all = TWc.reshape(d, n_comp, d).transpose(1, 0, 2)  # (n_comp, d, d)
+        all_vecs = R_all.reshape(n_comp, d * d).T              # (d², n_comp)
+        rhs = D_w.T @ all_vecs                                 # (m, n_comp)
+
+        try:
+            s_all = np.linalg.solve(reg, rhs)                  # (m, n_comp)
+        except np.linalg.LinAlgError:
+            return np.zeros((n_comp * d, d), dtype=float)
+
+        # Reconstruct symmetric B_α from D_w @ s_α
+        B_vecs = D_w @ s_all                                   # (d², n_comp)
+        B_flat = B_vecs.T.reshape(n_comp, d, d).reshape(n_comp * d, d)
+        return B_flat
 
     # ------------------------------------------------------------------
     # Core: lift to the next level
@@ -318,6 +397,7 @@ class BlowUpLevel:
         alpha: float = 1.0,
         lam: float = 0.0,
         weight_config: "WeightConfig | None" = None,
+        symmetric: bool = False,
     ) -> "BlowUpLevel":
         """
         Compute one step of the iterated blow-up.
@@ -342,6 +422,10 @@ class BlowUpLevel:
             lam:   ridge regularisation parameter (>= 0).
             weight_config: Regression weight configuration.  If None,
                 defaults to product kernel with sigma_x=0.5, sigma_u=0.5.
+            symmetric: If True, constrain each d×d curvature block to be
+                symmetric via vech_w reparametrisation (solves the true
+                constrained optimum).  If False (default), solve
+                unconstrained and symmetrise in ``extract_level1``.
 
         Returns:
             BlowUpLevel at level ell = self.level + 1.
@@ -375,6 +459,9 @@ class BlowUpLevel:
         # B_all[i] shape (n_comp, d, d):  B_all[i][:, :, a] = B_i(e_a) in R^{n_comp x d}
         B_all = np.zeros((N, n_comp, d, d), dtype=float)
 
+        # Precompute duplication matrix for symmetric solver
+        D_w = _build_vech_w_duplication(d) if symmetric else None
+
         for i in range(N):
             Ui = self.frame[i]          # (D, d)
             Ni = N_frames[i]            # (D, n_comp)
@@ -397,7 +484,12 @@ class BlowUpLevel:
             # einsum: C[k,p,d] = sum_m N_i.T[p,m] * dP_Ui[k,m,d]
             C = np.einsum("pm,kmd->kpd", Ni.T, dP_Ui)   # (k_eff, n_comp, d)
 
-            B_flat = self._fit_curvature(t, C, w, d, n_comp, lam)  # (n_comp*d, d)
+            if symmetric:
+                B_flat = self._fit_curvature_symmetric(
+                    t, C, w, d, n_comp, lam, D_w,
+                )
+            else:
+                B_flat = self._fit_curvature(t, C, w, d, n_comp, lam)
             B_all[i] = B_flat.reshape(n_comp, d, d)
             # B_all[i][:, :, a] = B_flat[:, a].reshape(n_comp, d) = B_i(e_a)
 

@@ -131,7 +131,7 @@ def _blowup_curvature(pts, normals, *, k=20, alpha=1.0, lam=0.0):
 
 def _load_jet_curvature(name: str) -> dict[str, np.ndarray] | None:
     """Load pre-computed jet-fitting curvatures from jet/ folder."""
-    jet_path = Path(__file__).parent / "jet" / f"jet_{name}_xyzn.txt"
+    jet_path = Path(__file__).parent / "jet" / f"jet_{name}.txt"
     if not jet_path.exists():
         return None
     jet_data = np.loadtxt(jet_path)
@@ -162,7 +162,13 @@ _METHOD_STYLE: dict[str, dict] = {
     "cnc":     dict(color="#ff7f0e", marker="^", ls="-.", lw=1.2),
     "blow-up": dict(color="#1f77b4", marker="o", ls="-",  lw=1.6),
 }
-CMAPS = {"K": "coolwarm", "H2": "viridis", "total": "viridis"}
+# Polyscope colormap names (lowercase)
+CMAPS = {"K": "coolwarm", "H2": "viridis", "total": "inferno",
+         "K_err": "reds", "H2_err": "reds", "total_err": "reds"}
+# Matplotlib colormap names (case-sensitive)
+MPL_CMAPS = {"K": "coolwarm", "H2": "viridis", "total": "inferno",
+             "K_err": "Reds", "H2_err": "Reds", "total_err": "Reds"}
+_POSITIVE_QUANTITIES = {"H2", "total", "H2_err", "total_err", "K_err"}
 _QUANTITY_DISPLAY = {
     "K": r"Gaussian curvature $K$",
     "H2": r"$H^2$",
@@ -208,11 +214,10 @@ def _plot_error_histograms(gt, methods, out_dir: Path):
     })
 
     estimation_methods = [m for m in methods if m != "ground truth"]
-    fig, axes = plt.subplots(1, len(QUANTITIES),
-                             figsize=(3.25 * len(QUANTITIES), 2.6),
-                             sharey=False)
+    n_q = len(QUANTITIES)
+    fig, axes = plt.subplots(1, n_q, figsize=(3.25 * n_q, 2.6), sharey=False)
 
-    for ax, qname in zip(axes, QUANTITIES):
+    for col, (ax, qname) in enumerate(zip(axes, QUANTITIES)):
         gt_vals = gt[qname]
         for mname in estimation_methods:
             est = methods[mname][qname]
@@ -224,8 +229,14 @@ def _plot_error_histograms(gt, methods, out_dir: Path):
             ax.hist(np.log10(err[mask]), bins=60, alpha=0.45,
                     color=sty.get("color"), label=mname, density=True)
 
-        ax.set_xlabel(r"$\log_{10}$ |error|")
-        ax.set_ylabel("density")
+        if col == n_q // 2:
+            ax.set_xlabel(r"$\log_{10}$ |error|")
+        else:
+            ax.set_xlabel("")
+        if col == 0:
+            ax.set_ylabel("density")
+        else:
+            ax.set_ylabel("")
         ax.set_title(_QUANTITY_TITLES.get(qname, qname))
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
@@ -312,11 +323,10 @@ def _plot_error_vs_v(v_param, gt, methods, out_dir: Path, n_bins=30):
     })
 
     estimation_methods = [m for m in methods if m != "ground truth"]
-    fig, axes = plt.subplots(1, len(QUANTITIES),
-                             figsize=(3.25 * len(QUANTITIES), 2.6),
-                             sharey=False)
+    n_q = len(QUANTITIES)
+    fig, axes = plt.subplots(1, n_q, figsize=(3.25 * n_q, 2.6), sharey=False)
 
-    for ax, qname in zip(axes, QUANTITIES):
+    for col, (ax, qname) in enumerate(zip(axes, QUANTITIES)):
         gt_vals = gt[qname]
         for mname in estimation_methods:
             est = methods[mname][qname]
@@ -454,7 +464,11 @@ def _plot_curvature_profile(v_param, gt, methods, out_dir: Path, n_bins=60):
                         ls="none", color=color, label=mname, zorder=5)
 
         ax_top.set_title(_QUANTITY_TITLES.get(qname, qname))
-        ax_top.set_ylabel(_PROFILE_LABELS.get(qname, qname))
+        # y-label only on leftmost column
+        if col == 0:
+            ax_top.set_ylabel(_PROFILE_LABELS.get(qname, qname))
+        else:
+            ax_top.set_ylabel("")
         ax_top.set_xlim(0, 2 * np.pi)
         ax_top.set_xticks(v_ticks)
         ax_top.set_xticklabels([])
@@ -476,15 +490,21 @@ def _plot_curvature_profile(v_param, gt, methods, out_dir: Path, n_bins=60):
                         ls=sty.get("ls", "-"), lw=sty.get("lw", 1.0),
                         color=color, label=mname)
 
-        ax_bot.set_xlabel(r"poloidal angle $v$")
-        ax_bot.set_ylabel(_QUANTITY_LABELS.get(qname, qname))
+        # x-label only on middle column
+        if col == n_q // 2:
+            ax_bot.set_xlabel(r"poloidal angle $v$")
+        else:
+            ax_bot.set_xlabel("")
+        # y-label only on leftmost column
+        if col == 0:
+            ax_bot.set_ylabel("absolute error")
+        else:
+            ax_bot.set_ylabel("")
         ax_bot.set_yscale("log")
         ax_bot.set_xlim(0, 2 * np.pi)
         ax_bot.set_xticks(v_ticks)
         ax_bot.set_xticklabels(v_tick_labels)
-        ax_bot.yaxis.set_major_locator(ticker.LogLocator(numticks=5))
-        ax_bot.yaxis.set_minor_locator(ticker.LogLocator(
-            subs=np.arange(2, 10) * 0.1, numticks=12))
+        ax_bot.yaxis.set_major_locator(ticker.LogLocator(base=10, numticks=5))
         ax_bot.yaxis.set_minor_formatter(ticker.NullFormatter())
         ax_bot.spines["top"].set_visible(False)
         ax_bot.spines["right"].set_visible(False)
@@ -563,7 +583,7 @@ def _export_ply(pts, normals, panel_names, panel_data, state, ALL_QUANTITIES):
 
     qname = ALL_QUANTITIES[state["quantity"]]
     normalize = state["normalize"]
-    cmap = plt.get_cmap(CMAPS.get(qname.replace("_err", ""), "viridis"))
+    cmap = plt.get_cmap(MPL_CMAPS.get(qname, "viridis"))
     if qname.endswith("_err"):
         cmap = plt.get_cmap("viridis")
 
@@ -572,6 +592,11 @@ def _export_ply(pts, normals, panel_names, panel_data, state, ALL_QUANTITIES):
         if key not in panel_data[pname]:
             continue
         vals, vmin, vmax = panel_data[pname][key]
+        if state.get("vmin") is not None:
+            vmin = state["vmin"]
+        if state.get("vmax") is not None:
+            vmax = state["vmax"]
+        vals = np.clip(vals, vmin, vmax)
         norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
         rgba = cmap(norm(vals))
         rgb = (rgba[:, :3] * 255).astype(np.uint8)
@@ -610,8 +635,12 @@ def _export_colourbar(panel_names, panel_data, state, ALL_QUANTITIES):
     if vmin is None:
         print("No data for current quantity.")
         return
+    if state.get("vmin") is not None:
+        vmin = state["vmin"]
+    if state.get("vmax") is not None:
+        vmax = state["vmax"]
 
-    cmap = plt.get_cmap(CMAPS.get(qname.replace("_err", ""), "viridis"))
+    cmap = plt.get_cmap(MPL_CMAPS.get(qname, "viridis"))
     if qname.endswith("_err"):
         cmap = plt.get_cmap("viridis")
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
@@ -687,7 +716,7 @@ def _show_polyscope(pts, normals, v_param, gt, methods):
     for qname in ALL_QUANTITIES:
         all_v = [methods[m][qname] for m in method_names if qname in methods[m]]
         if all_v:
-            if qname.endswith("_err"):
+            if qname in _POSITIVE_QUANTITIES:
                 _, vmin, vmax = _clamp_positive(np.concatenate(all_v))
             else:
                 _, vmin, vmax = _clamp(np.concatenate(all_v))
@@ -714,25 +743,43 @@ def _show_polyscope(pts, normals, v_param, gt, methods):
             panel_data[pname][(qname, False)] = (
                 np.clip(raw, sv_min, sv_max), sv_min, sv_max)
 
-            if qname.endswith("_err"):
+            if qname in _POSITIVE_QUANTITIES:
                 _, pv_min, pv_max = _clamp_positive(methods[method][qname])
             else:
                 _, pv_min, pv_max = _clamp(methods[method][qname])
             panel_data[pname][(qname, True)] = (
                 np.clip(raw, pv_min, pv_max), pv_min, pv_max)
 
-    state = {"quantity": 0, "normalize": False}
+    # Initialise vmin/vmax from the first quantity's shared range
+    _init_key = ("K", False)
+    _init_vmin = _init_vmax = 0.0
+    for _pn in panel_names:
+        if _init_key in panel_data[_pn]:
+            _, _init_vmin, _init_vmax = panel_data[_pn][_init_key]
+            break
+
+    state = {
+        "quantity": 0, "normalize": False,
+        "vmin": _init_vmin, "vmax": _init_vmax,
+    }
 
     def _show_q(qname, normalize=False):
         key = (qname, normalize)
-        cmap = CMAPS.get(qname.replace("_err", ""), "viridis")
+        cmap = CMAPS.get(qname, "viridis")
         if qname.endswith("_err"):
-            cmap = "viridis"
+            cmap = CMAPS.get(qname, "Reds")
+        vmin_o = state.get("vmin")
+        vmax_o = state.get("vmax")
         for name in panel_names:
             if key in panel_data[name]:
                 vals, vmin, vmax = panel_data[name][key]
+                if vmin_o is not None:
+                    vmin = vmin_o
+                if vmax_o is not None:
+                    vmax = vmax_o
+                vals_clipped = np.clip(vals, vmin, vmax)
                 ps.get_point_cloud(name).add_scalar_quantity(
-                    "curvature", vals, enabled=True,
+                    "curvature", vals_clipped, enabled=True,
                     cmap=cmap, vminmax=(vmin, vmax))
 
     _show_q("K")
@@ -750,12 +797,31 @@ def _show_polyscope(pts, normals, v_param, gt, methods):
                                       ALL_QUANTITIES)
         if changed_q:
             state["quantity"] = new_q
+            qname = ALL_QUANTITIES[new_q]
+            key = (qname, state["normalize"])
+            for _pn in panel_names:
+                if key in panel_data[_pn]:
+                    _, state["vmin"], state["vmax"] = panel_data[_pn][key]
+                    break
             _refresh()
 
         changed_n, new_n = psim.Checkbox("Normalize per method",
                                          state["normalize"])
         if changed_n:
             state["normalize"] = new_n
+            qname = ALL_QUANTITIES[state["quantity"]]
+            key = (qname, new_n)
+            for _pn in panel_names:
+                if key in panel_data[_pn]:
+                    _, state["vmin"], state["vmax"] = panel_data[_pn][key]
+                    break
+            _refresh()
+
+        changed_vmin, new_vmin = psim.InputFloat("vmin", state["vmin"])
+        changed_vmax, new_vmax = psim.InputFloat("vmax", state["vmax"])
+        if changed_vmin or changed_vmax:
+            state["vmin"] = new_vmin
+            state["vmax"] = new_vmax
             _refresh()
 
         psim.Separator()
@@ -821,7 +887,7 @@ def main():
         methods["jet"] = jf
 
     # CNC baseline (if file exists)
-    cnc_path = Path(__file__).parent / "cnc" / "cnc_torus_xyzn.txt"
+    cnc_path = Path(__file__).parent / "cnc" / "cnc_torus.txt"
     if cnc_path.exists():
         print(f"  Loading CNC curvatures from {cnc_path} ...")
         cnc_data = np.loadtxt(cnc_path)

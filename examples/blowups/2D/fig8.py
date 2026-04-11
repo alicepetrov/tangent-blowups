@@ -63,6 +63,7 @@ def main():
     plt.rcParams.update({
         "font.size": 9,
         "font.family": "serif",
+        "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
         "mathtext.fontset": "cm",
         "axes.linewidth": 0.4,
     })

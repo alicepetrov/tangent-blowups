@@ -194,8 +194,9 @@ def main():
 
     plt.rcParams.update({
         "font.family": "serif",
-        "font.size": 9,
+        "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
         "mathtext.fontset": "cm",
+        "font.size": 9,
         "axes.labelsize": 10,
         "axes.titlesize": 11,
         "legend.fontsize": 8,

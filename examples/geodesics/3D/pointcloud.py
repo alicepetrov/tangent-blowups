@@ -176,7 +176,9 @@ def _edge_gradient(points, f, W, lam=0.0):
         np.add.at(b[:, dim], rows, vals_b)
 
     tr = np.trace(S, axis1=1, axis2=2)
-    ridge = np.where(tr > 0, lam * tr / n, lam)
+    pos_tr = tr[tr > 0]
+    fallback = float(np.median(pos_tr)) / n if pos_tr.size > 0 else 1.0
+    ridge = np.maximum(lam * tr / n, 1e-12 * fallback)
     S += ridge[:, None, None] * np.eye(n)
 
     grad = np.linalg.solve(S, b)
@@ -279,12 +281,16 @@ def _dist_to_colors(dist, u, n_points, n_bands=15):
 
 
 # -- Per-method geodesic computation -----------------------------------------
-def _compute_lifted(level, points, source_index, *, k, sigma_x, sigma_u, t_scale):
-    print(f"    lifted bandwidths: sigma_x={sigma_x}, sigma_u={sigma_u}")
+def _compute_lifted(level, points, source_index, *, k, sigma_x, sigma_u,
+                    t_scale, uniform_regression=True, diffusion_steps=1):
+    print(f"    lifted: sigma_x={sigma_x}, sigma_u={sigma_u}, "
+          f"uniform_reg={uniform_regression}, steps={diffusion_steps}")
     dist, u, _, _ = lifted_heat_method(
         level, source_index=source_index, k=k,
         kernel="product", sigma_x=sigma_x, sigma_u=sigma_u,
         t_scale=t_scale, return_intermediate=True,
+        uniform_regression=uniform_regression,
+        diffusion_steps=diffusion_steps,
     )
     dist = np.maximum(dist - dist[source_index], 0.0)
     return dist, u
@@ -311,6 +317,7 @@ def _compute_and_display(
     method: str,
     level, points, source_index, state,
     *, k, sigma_x, sigma_u, t_scale, method_points,
+    uniform_regression=True, diffusion_steps=1,
 ):
     """Compute geodesics for one method and update its point cloud."""
     print(f"  [{method}] computing...")
@@ -318,6 +325,8 @@ def _compute_and_display(
         dist, u = _compute_lifted(
             level, points, source_index,
             k=k, sigma_x=sigma_x, sigma_u=sigma_u, t_scale=t_scale,
+            uniform_regression=uniform_regression,
+            diffusion_steps=diffusion_steps,
         )
     elif method == "robust":
         dist, u = _compute_robust(
@@ -360,7 +369,7 @@ def main():
     parser.add_argument("--sigma-u", type=float, default=0.5)
     parser.add_argument("--t-scale-lifted", type=float, default=1.0,
                         help="Time-scale multiplier for the lifted method.")
-    parser.add_argument("--t-scale-robust", type=float, default=5.0,
+    parser.add_argument("--t-scale-robust", type=float, default=1.0,
                         help="Time-scale multiplier for the robust method.")
     parser.add_argument(
         "--rotate", "-r", type=str, default=None,
@@ -435,6 +444,8 @@ def main():
         "alpha": alpha,
         "n_lifts": n_lifts,
         "level": level,
+        "uniform_regression": False,
+        "diffusion_steps": 1,
     }
     for m in METHODS:
         state[f"{m}_smooth"] = None
@@ -475,6 +486,15 @@ def main():
             )
             print(f"Done: N={state['level'].N}, D={state['level'].D}")
 
+        # Regression weights and diffusion steps
+        _, state["uniform_regression"] = psim.Checkbox(
+            "Uniform regression (w=1)", state["uniform_regression"],
+        )
+        _, state["diffusion_steps"] = psim.InputInt(
+            "Diffusion steps", state["diffusion_steps"],
+        )
+        state["diffusion_steps"] = max(1, state["diffusion_steps"])
+
         if have:
             if psim.Button("Compute geodesics"):
                 state["source_index"] = pick.local_index
@@ -505,6 +525,8 @@ def main():
                     k=k, sigma_x=sigma_x, sigma_u=sigma_u,
                     t_scale=state[f"t_scale_{m}"],
                     method_points=method_points,
+                    uniform_regression=state["uniform_regression"],
+                    diffusion_steps=state["diffusion_steps"],
                 )
 
     # -- Polyscope setup --

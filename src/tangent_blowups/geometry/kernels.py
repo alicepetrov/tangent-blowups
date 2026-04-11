@@ -2,7 +2,7 @@
 Lifted Kernels and Affinity Matrices
 --------------------------------------
 Kernels on the product space R^n x Gr(d, n) arising from the tangent blow-up
-construction.  Two families are provided, both operating on BlowUpLevel data:
+construction.  Three families are provided, all operating on BlowUpLevel data:
 
 1. **Product kernel** (multi-scale, independent spatial and angular bandwidths):
        K = exp(-||x_i - x_j||^2 / sigma_x^2)
@@ -12,7 +12,11 @@ construction.  Two families are provided, both operating on BlowUpLevel data:
    kernel.  At higher levels, one angular factor per blow-up level is
    included, each with an independent bandwidth sigma_m.
 
-2. **Self-tuning affinity** (Zelnik-Manor & Perona 2004):
+2. **Uniform** (binary adjacency):
+       W_ij = 1  for all k-NN edges.
+   Gives the standard combinatorial graph Laplacian L = D - W.
+
+3. **Self-tuning affinity** (Zelnik-Manor & Perona 2004):
        W_ij = exp(-d_M^2 / (h_i * h_j))
    with h_i = distance from Phi_i to its k-th nearest neighbour in the
    Chordal-Sasaki metric.  This adapts the bandwidth pointwise to the local
@@ -226,6 +230,36 @@ def lifted_affinity(
     return _assemble_affinity(N, rows, cols, weights, symmetrize=symmetrize)
 
 
+def uniform_affinity(
+    level: BlowUpLevel,
+    *,
+    k: int = 20,
+    symmetrize: bool = True,
+) -> sparse.csr_matrix:
+    """
+    Binary k-NN affinity matrix (all edge weights = 1).
+
+    Builds a k-NN graph in the Chordal-Sasaki embedding, then assigns
+    unit weight to every edge.  The resulting graph Laplacian L = D - W
+    is the standard combinatorial Laplacian.
+
+    Args:
+        level:      BlowUpLevel at any level.
+        k:          k-NN neighbourhood size.
+        symmetrize: Make W symmetric.
+
+    Returns:
+        Sparse symmetric (N, N) affinity matrix with entries in {0, 1}.
+    """
+    N = level.N
+    if N == 0:
+        return sparse.csr_matrix((0, 0), dtype=float)
+
+    rows, cols, _ = _knn_edges(level.embedded, k)
+    weights = np.ones(len(rows), dtype=float)
+    return _assemble_affinity(N, rows, cols, weights, symmetrize=symmetrize)
+
+
 def product_affinity(
     level: BlowUpLevel,
     sigma_x: float,
@@ -383,7 +417,7 @@ def affinity_to_laplacian(
 def lifted_laplacian(
     level: BlowUpLevel,
     *,
-    kernel: Literal["self_tuning", "product"] = "product",
+    kernel: Literal["product", "uniform", "self_tuning"] = "product",
     k: int = 20,
     h: float | Literal["local"] | None = "local",
     sigma_x: float = 0.5,
@@ -400,7 +434,7 @@ def lifted_laplacian(
 
     Args:
         level:      BlowUpLevel (any level).
-        kernel:     "product" (default) or "self_tuning".
+        kernel:     "product" (default), "uniform", or "self_tuning".
         k:          k-NN neighbourhood size.
         h:          Bandwidth for "self_tuning" kernel.
         sigma_x:    Spatial bandwidth for "product" kernel (default 0.5).
@@ -414,12 +448,14 @@ def lifted_laplacian(
     Returns:
         (L, W, D) — Laplacian, affinity matrix, degree matrix.
     """
-    if kernel == "self_tuning":
-        W = lifted_affinity(level, k=k, h=h, symmetrize=symmetrize)
-    elif kernel == "product":
+    if kernel == "product":
         W = product_affinity(level, sigma_x, sigma_u, k=k, symmetrize=symmetrize)
+    elif kernel == "uniform":
+        W = uniform_affinity(level, k=k, symmetrize=symmetrize)
+    elif kernel == "self_tuning":
+        W = lifted_affinity(level, k=k, h=h, symmetrize=symmetrize)
     else:
-        raise ValueError(f"Unknown kernel '{kernel}'. Choose 'product' or 'self_tuning'.")
+        raise ValueError(f"Unknown kernel '{kernel}'. Choose 'product', 'uniform', or 'self_tuning'.")
 
     return affinity_to_laplacian(W, normalized=normalized, eps=eps)
 
@@ -490,12 +526,13 @@ def _precompute_edges(level, W, lam):
 
     # Relative ridge regularisation with absolute floor.
     # For well-connected vertices, ridge = lam * tr(S) / d (relative).
-    # For isolated / near-zero vertices, use lam * median(tr(S)) / d so
-    # the matrix is always safely invertible.
+    # For isolated / near-zero vertices, use a small absolute floor so
+    # S is always safely invertible (even when lam=0).
     tr_S = np.trace(S, axis1=1, axis2=2)                # (N,)
     pos_tr = tr_S[tr_S > 0]
     fallback_scale = float(np.median(pos_tr)) if pos_tr.size > 0 else 1.0
     ridge = np.maximum(lam * tr_S / d, lam * fallback_scale / d)
+    ridge = np.maximum(ridge, 1e-12 * fallback_scale / d)
     S += ridge[:, np.newaxis, np.newaxis] * np.eye(d)
 
     # Batch invert (np.linalg.inv is fine for small d x d)
@@ -658,6 +695,7 @@ __all__ = [
     # Affinity builders
     "lifted_affinity",
     "product_affinity",
+    "uniform_affinity",
     # Laplacian
     "affinity_to_laplacian",
     "lifted_laplacian",

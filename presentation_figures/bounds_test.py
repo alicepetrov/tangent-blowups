@@ -23,8 +23,8 @@ import matplotlib.patches
 
 plt.rcParams.update({
     "font.family":       "serif",
-    "font.serif":        ["Georgia", "DejaVu Serif", "Times New Roman"],
-    "mathtext.fontset":  "dejavuserif",
+    "font.serif":        ["Times New Roman", "Times", "DejaVu Serif"],
+    "mathtext.fontset":  "cm",
     "figure.facecolor":  "white",
     "axes.facecolor":    "white",
     "axes.spines.top":   False,

@@ -109,6 +109,8 @@ def main():
     # -- Style ---------------------------------------------------------------
     mpl.rcParams.update({
         "font.family": "serif",
+        "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+        "mathtext.fontset": "cm",
         "font.size": 8,
         "axes.titlesize": 9,
         "axes.labelsize": 7,

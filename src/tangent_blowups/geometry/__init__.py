@@ -2,6 +2,7 @@ from .weight_config import WeightConfig, product_weights
 from .kernels import (
     lifted_affinity,
     product_affinity,
+    uniform_affinity,
     affinity_to_laplacian,
     lifted_laplacian,
     lifted_gradient,
@@ -13,6 +14,7 @@ __all__ = [
     "product_weights",
     "lifted_affinity",
     "product_affinity",
+    "uniform_affinity",
     "affinity_to_laplacian",
     "lifted_laplacian",
     "lifted_gradient",

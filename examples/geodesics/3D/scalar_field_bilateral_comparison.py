@@ -320,7 +320,10 @@ def _edge_gradient_pts(points, f, W, lam=0.0):
         vals_b = ws * df * dx[:, dim]
         np.add.at(b[:, dim], rows, vals_b)
     tr = np.trace(S, axis1=1, axis2=2)
-    ridge = np.where(tr > 0, lam * tr / n, lam)
+    pos_tr = tr[tr > 0]
+    fallback = float(np.median(pos_tr)) / n if pos_tr.size > 0 else 1.0
+    ridge = np.maximum(lam * tr / n, lam * fallback)
+    ridge = np.maximum(ridge, 1e-12 * fallback)
     S += ridge[:, None, None] * np.eye(n)
     return np.linalg.solve(S, b)
 

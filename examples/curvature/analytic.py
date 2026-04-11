@@ -278,8 +278,13 @@ SURFACES = {
 QUANTITIES = ["K", "H2", "total"]
 ERROR_QUANTITIES = ["K_err", "H2_err", "total_err"]
 ALL_QUANTITIES = QUANTITIES + ERROR_QUANTITIES
-CMAPS = {"K": "coolwarm", "H2": "viridis", "total": "viridis",
-         "K_err": "viridis", "H2_err": "viridis", "total_err": "viridis"}
+# Polyscope colormap names (lowercase)
+CMAPS = {"K": "coolwarm", "H2": "viridis", "total": "inferno",
+         "K_err": "reds", "H2_err": "reds", "total_err": "reds"}
+# Matplotlib colormap names (case-sensitive)
+MPL_CMAPS = {"K": "coolwarm", "H2": "viridis", "total": "inferno",
+             "K_err": "Reds", "H2_err": "Reds", "total_err": "Reds"}
+_POSITIVE_QUANTITIES = {"H2", "total", "H2_err", "total_err", "K_err"}
 
 
 def _clamp(vals, pct=5):
@@ -302,14 +307,20 @@ def _clamp_positive(vals, pct=5):
     return clamped, 0.0, hi
 
 
-def _show_quantity(qname, panel_names, panel_data, *, normalize=False):
+def _show_quantity(qname, panel_names, panel_data, *, normalize=False,
+                   vmin_override=None, vmax_override=None):
     key = (qname, normalize)
     cmap = CMAPS.get(qname, "viridis")
     for name in panel_names:
         if key in panel_data[name]:
             vals, vmin, vmax = panel_data[name][key]
+            if vmin_override is not None:
+                vmin = vmin_override
+            if vmax_override is not None:
+                vmax = vmax_override
+            vals_clipped = np.clip(vals, vmin, vmax)
             ps.get_point_cloud(name).add_scalar_quantity(
-                "curvature", vals, enabled=True,
+                "curvature", vals_clipped, enabled=True,
                 cmap=cmap, vminmax=(vmin, vmax),
             )
 
@@ -332,13 +343,18 @@ def _export_ply(surface_name, pts, normals, panel_names, panel_data, state):
 
     qname = ALL_QUANTITIES[state["quantity"]]
     normalize = state["normalize"]
-    cmap = plt.get_cmap(CMAPS.get(qname, "viridis"))
+    cmap = plt.get_cmap(MPL_CMAPS.get(qname, "viridis"))
 
     for pname in panel_names:
         key = (qname, normalize)
         if key not in panel_data[pname]:
             continue
         vals, vmin, vmax = panel_data[pname][key]
+        if state.get("vmin") is not None:
+            vmin = state["vmin"]
+        if state.get("vmax") is not None:
+            vmax = state["vmax"]
+        vals = np.clip(vals, vmin, vmax)
         norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
         rgba = cmap(norm(vals))
         rgb = (rgba[:, :3] * 255).astype(np.uint8)
@@ -377,8 +393,12 @@ def _export_colourbar(surface_name, panel_names, panel_data, state):
     if vmin is None:
         print("No data for current quantity.")
         return
+    if state.get("vmin") is not None:
+        vmin = state["vmin"]
+    if state.get("vmax") is not None:
+        vmax = state["vmax"]
 
-    cmap = plt.get_cmap(CMAPS.get(qname, "viridis"))
+    cmap = plt.get_cmap(MPL_CMAPS.get(qname, "viridis"))
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
 
     fig, ax = plt.subplots(figsize=(4.5, 0.35))
@@ -422,7 +442,7 @@ def _export_data(results):
             for qname in QUANTITIES:
                 data[f"{safe}_{qname}"] = methods[mname][qname]
 
-        fname = f"curvature_data_{sname}.npz"
+        fname = f"sing_dist_curvature_data_{sname}.npz"
         np.savez(fname, **data)
         print(f"Saved {fname}")
 
@@ -451,6 +471,8 @@ def _plot_error_vs_distance(sing_dist, gt, methods, surface_name,
 
     plt.rcParams.update({
         "font.family": "serif",
+        "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+        "mathtext.fontset": "cm",
         "font.size": 9,
         "axes.labelsize": 10,
         "axes.titlesize": 11,
@@ -461,13 +483,10 @@ def _plot_error_vs_distance(sing_dist, gt, methods, surface_name,
     })
 
     estimation_methods = [m for m in methods if m != "ground truth"]
-    fig, axes = plt.subplots(
-        1, len(QUANTITIES),
-        figsize=(3.25 * len(QUANTITIES), 2.6),
-        sharey=False,
-    )
+    n_q = len(QUANTITIES)
+    fig, axes = plt.subplots(1, n_q, figsize=(3.25 * n_q, 2.6), sharey=False)
 
-    for ax, qname in zip(axes, QUANTITIES):
+    for col, (ax, qname) in enumerate(zip(axes, QUANTITIES)):
         gt_vals = gt[qname]
         for mname in estimation_methods:
             est = methods[mname][qname]
@@ -507,13 +526,22 @@ def _plot_error_vs_distance(sing_dist, gt, methods, surface_name,
                     ls=sty.get("ls", "-"), lw=sty.get("lw", 1.2),
                     color=color)
 
-        ax.set_xlabel(singularity_label)
-        ax.set_ylabel(_QUANTITY_LABELS.get(qname, qname))
+        # x-axis label only on the middle panel
+        if col == n_q // 2:
+            ax.set_xlabel(singularity_label)
+        else:
+            ax.set_xlabel("")
+
+        # y-axis label only on the leftmost panel
+        if col == 0:
+            ax.set_ylabel("absolute error")
+        else:
+            ax.set_ylabel("")
+
         ax.set_title(_QUANTITY_TITLES.get(qname, qname))
         ax.set_yscale("log")
-        ax.yaxis.set_major_locator(ticker.LogLocator(numticks=6))
-        ax.yaxis.set_minor_locator(ticker.LogLocator(
-            subs=np.arange(2, 10) * 0.1, numticks=12))
+        # Fixed evenly-spaced log ticks
+        ax.yaxis.set_major_locator(ticker.LogLocator(base=10, numticks=5))
         ax.yaxis.set_minor_formatter(ticker.NullFormatter())
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
@@ -532,6 +560,19 @@ def _plot_error_vs_distance(sing_dist, gt, methods, surface_name,
 def _plot_error_bar_chart(all_results):
     """Grouped bar chart: median absolute error per method per quantity per surface."""
     import matplotlib.pyplot as plt
+
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+        "mathtext.fontset": "cm",
+        "font.size": 9,
+        "axes.labelsize": 10,
+        "axes.titlesize": 11,
+        "legend.fontsize": 8.5,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "figure.dpi": 150,
+    })
 
     # Collect (surface, method, quantity) -> median |error|
     rows = []
@@ -740,7 +781,7 @@ def run(
     for qname in ALL_QUANTITIES:
         all_v = [methods[m][qname] for m in method_names if qname in methods[m]]
         if all_v:
-            if qname.endswith("_err"):
+            if qname in _POSITIVE_QUANTITIES:
                 _, vmin, vmax = _clamp_positive(np.concatenate(all_v))
             else:
                 _, vmin, vmax = _clamp(np.concatenate(all_v))
@@ -769,7 +810,7 @@ def run(
             panel_data[pname][(qname, False)] = (
                 np.clip(raw, sv_min, sv_max), sv_min, sv_max)
 
-            if qname.endswith("_err"):
+            if qname in _POSITIVE_QUANTITIES:
                 _, pv_min, pv_max = _clamp_positive(methods[method][qname])
             else:
                 _, pv_min, pv_max = _clamp(methods[method][qname])
@@ -825,13 +866,27 @@ def main():
         all_panel_data.update(result["panel_data"])
         all_results.append(result)
 
-    state = {"quantity": 0, "normalize": False, "normals": False}
+    # Initialise vmin/vmax from the first quantity's shared range
+    _init_key = ("K", False)
+    _init_vmin = _init_vmax = 0.0
+    for _pn in all_panel_names:
+        if _init_key in all_panel_data[_pn]:
+            _, _init_vmin, _init_vmax = all_panel_data[_pn][_init_key]
+            break
 
-    _show_quantity("K", all_panel_names, all_panel_data, normalize=False)
+    state = {
+        "quantity": 0, "normalize": False, "normals": False,
+        "vmin": _init_vmin, "vmax": _init_vmax,
+    }
+
+    _show_quantity("K", all_panel_names, all_panel_data, normalize=False,
+                   vmin_override=state["vmin"], vmax_override=state["vmax"])
 
     def _refresh():
         _show_quantity(ALL_QUANTITIES[state["quantity"]], all_panel_names,
-                       all_panel_data, normalize=state["normalize"])
+                       all_panel_data, normalize=state["normalize"],
+                       vmin_override=state["vmin"],
+                       vmax_override=state["vmax"])
 
     def callback():
         psim.TextUnformatted(
@@ -844,12 +899,32 @@ def main():
                                       ALL_QUANTITIES)
         if changed_q:
             state["quantity"] = new_q
+            # Reset vmin/vmax to defaults for the new quantity
+            qname = ALL_QUANTITIES[new_q]
+            key = (qname, state["normalize"])
+            for _pn in all_panel_names:
+                if key in all_panel_data[_pn]:
+                    _, state["vmin"], state["vmax"] = all_panel_data[_pn][key]
+                    break
             _refresh()
 
         changed_n, new_n = psim.Checkbox("Normalize per method",
                                          state["normalize"])
         if changed_n:
             state["normalize"] = new_n
+            qname = ALL_QUANTITIES[state["quantity"]]
+            key = (qname, new_n)
+            for _pn in all_panel_names:
+                if key in all_panel_data[_pn]:
+                    _, state["vmin"], state["vmax"] = all_panel_data[_pn][key]
+                    break
+            _refresh()
+
+        changed_vmin, new_vmin = psim.InputFloat("vmin", state["vmin"])
+        changed_vmax, new_vmax = psim.InputFloat("vmax", state["vmax"])
+        if changed_vmin or changed_vmax:
+            state["vmin"] = new_vmin
+            state["vmax"] = new_vmax
             _refresh()
 
         changed_nrm, new_nrm = psim.Checkbox("Show normals", state["normals"])

@@ -108,8 +108,9 @@ def main():
     # -- Figure --
     plt.rcParams.update({
         "font.family": "serif",
-        "font.size": 10,
+        "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
         "mathtext.fontset": "cm",
+        "font.size": 10,
         "axes.titlesize": 12,
         "figure.dpi": 150,
     })
