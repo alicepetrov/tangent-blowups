@@ -363,7 +363,7 @@ def main():
     )
     parser.add_argument("--k", type=int, default=20)
     parser.add_argument("--alpha", type=float, default=1.0)
-    parser.add_argument("--levels", type=str, default="1",
+    parser.add_argument("--levels", type=str, default="both",
                         choices=["1", "2", "both"],
                         help="Blow-up levels to show: 1, 2, or both.")
     parser.add_argument("--spread", type=str, default="partial",
@@ -481,6 +481,8 @@ def main():
         "t_scale_lifted": args.t_scale_lifted,
         "t_scale_robust": args.t_scale_robust,
         "uniform_regression": False,
+        "partial_steps": args.partial_steps,
+        "full_steps": args.full_steps,
     }
     for p in all_panels:
         state[f"{p}_smooth"] = None
@@ -488,7 +490,7 @@ def main():
 
     def _compute_panel(panel_name, source_index):
         row_name, col_name = panel_name.split("/")
-        diff_steps = dict(rows)[row_name]
+        diff_steps = state["partial_steps"] if row_name == "partial" else state["full_steps"]
         _, level = [(c, l) for c, l in columns if c == col_name][0]
 
         if col_name == "robust":
@@ -543,6 +545,14 @@ def main():
         _, state["uniform_regression"] = psim.Checkbox(
             "Uniform regression (w=1)", state["uniform_regression"],
         )
+        if any(r == "partial" for r, _ in rows):
+            _, state["partial_steps"] = psim.InputInt(
+                "Partial steps", state["partial_steps"],
+            )
+        if any(r == "full" for r, _ in rows):
+            _, state["full_steps"] = psim.InputInt(
+                "Full steps", state["full_steps"],
+            )
 
         if have:
             if psim.Button("Compute geodesics"):
