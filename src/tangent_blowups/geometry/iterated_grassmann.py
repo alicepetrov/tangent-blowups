@@ -397,7 +397,7 @@ class BlowUpLevel:
         alpha: float = 1.0,
         lam: float = 0.0,
         weight_config: "WeightConfig | None" = None,
-        symmetric: bool = False,
+        symmetric: bool = True,
     ) -> "BlowUpLevel":
         """
         Compute one step of the iterated blow-up.

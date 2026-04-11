@@ -5,6 +5,8 @@ Top row    — spatial coordinates (x, y)
 Bottom row — tangent projector P = uu^T shown as a 2×2 matrix
 """
 
+import argparse
+
 import numpy as np
 import matplotlib.cm as mcm
 import matplotlib.colors as mcolors
@@ -52,7 +54,7 @@ def _scatter(ax, pts, values, *, cmap, vmin=None, vmax=None, s=9):
     return sc
 
 
-def main():
+def main(mode: str = "all"):
     points, tangents = build_oriented_fig8(n=1200, scale=2.0, seed=7)
     lifted = BlowUpLevel.from_point_tangents(points, tangents)
 
@@ -68,57 +70,62 @@ def main():
         "axes.linewidth": 0.4,
     })
 
-    fig = plt.figure(figsize=(5.0, 7.0), constrained_layout=True)
-
-    gs = GridSpec(
-        3, 2, figure=fig,
-        height_ratios=[1, 1, 1],
-        hspace=0.08, wspace=0.08,
+    # Slightly lighter red/blue than stock RdBu_r for better contrast
+    _base = plt.get_cmap("RdBu_r")
+    cmap = mcolors.LinearSegmentedColormap.from_list(
+        "RdBu_r_light", _base(np.linspace(0.05, 0.95, 256))
     )
 
-    # Each panel is normalized to its own [min, max] for maximum contrast.
-    # A single colorbar shows the normalized scale (0 = per-panel min, 1 = max).
-    cmap = "RdBu_r"
+    if mode in ("all", "projector"):
+        fig = plt.figure(figsize=(5.0, 7.0), constrained_layout=True)
 
-    all_axes = []
-    panels = [
-        (r"$x$",       pts[:, 0]),
-        (r"$y$",       pts[:, 1]),
-        (r"$P_{00}$",  P[:, 0, 0]),
-        (r"$P_{01}$",  P[:, 0, 1]),
-        (r"$P_{10}$",  P[:, 1, 0]),
-        (r"$P_{11}$",  P[:, 1, 1]),
-    ]
-    grid_pos = [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]
+        gs = GridSpec(
+            3, 2, figure=fig,
+            height_ratios=[1, 1, 1],
+            hspace=0.08, wspace=0.08,
+        )
 
-    for (label, vals), (row, col) in zip(panels, grid_pos):
-        ax = fig.add_subplot(gs[row, col])
-        lo, hi = vals.min(), vals.max()
-        _scatter(ax, pts, vals, cmap=cmap, vmin=lo, vmax=hi)
-        ax.set_title(label, fontsize=12, pad=6)
-        all_axes.append(ax)
+        # Each panel is normalized to its own [min, max] for maximum contrast.
+        # A single colorbar shows the normalized scale (0 = per-panel min, 1 = max).
+        all_axes = []
+        panels = [
+            (r"$x$",       pts[:, 0]),
+            (r"$y$",       pts[:, 1]),
+            (r"$P_{00}$",  P[:, 0, 0]),
+            (r"$P_{01}$",  P[:, 0, 1]),
+            (r"$P_{10}$",  P[:, 1, 0]),
+            (r"$P_{11}$",  P[:, 1, 1]),
+        ]
+        grid_pos = [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]
 
-    # Single colorbar — shows normalised scale since each panel has its own range
-    sm = mcm.ScalarMappable(cmap=cmap, norm=mcolors.Normalize(vmin=0, vmax=1))
-    fig.colorbar(sm, ax=all_axes, fraction=0.03, pad=0.02, aspect=40,
-                 label="normalized")
+        for (label, vals), (row, col) in zip(panels, grid_pos):
+            ax = fig.add_subplot(gs[row, col])
+            lo, hi = vals.min(), vals.max()
+            _scatter(ax, pts, vals, cmap=cmap, vmin=lo, vmax=hi)
+            ax.set_title(label, fontsize=12, pad=6)
+            all_axes.append(ax)
 
-    fig.savefig("fig8_nash_blowup.pdf", bbox_inches="tight", dpi=300)
-    plt.show()
+        sm = mcm.ScalarMappable(cmap=cmap, norm=mcolors.Normalize(vmin=0, vmax=1))
+        fig.colorbar(sm, ax=all_axes, fraction=0.03, pad=0.02, aspect=40,
+                     label="normalized")
+
+        fig.savefig("fig8_nash_blowup.pdf", bbox_inches="tight", dpi=300)
+        plt.show()
 
     # ---- kNN comparison: ambient vs lifted near the intersection ----
-    query_idx, idx_amb, dist_amb, idx_lift, dist_lift = _find_knn(lifted, k=200, alpha=1.0)
+    if mode in ("all", "knn", "combined"):
+        query_idx, idx_amb, dist_amb, idx_lift, dist_lift = _find_knn(lifted, k=200, alpha=1.0)
 
-    # Plot 2: standalone kNN comparison
-    _plot_knn_comparison(pts, query_idx, idx_amb, dist_amb, idx_lift, dist_lift, s=9)
+        if mode in ("all", "knn"):
+            _plot_knn_comparison(pts, query_idx, idx_amb, dist_amb, idx_lift, dist_lift, s=9)
 
-    # Plot 3: combined figure — kNN on top, projector matrix on bottom
-    _plot_combined(pts, P, query_idx, idx_amb, dist_amb, idx_lift, dist_lift, cmap=cmap, s=9)
+        if mode in ("all", "combined"):
+            _plot_combined(pts, P, query_idx, idx_amb, dist_amb, idx_lift, dist_lift, cmap=cmap, s=9)
 
 
 def _find_knn(lifted: BlowUpLevel, *, k: int = 80, alpha: float = 1.0):
     """Find kNN indices near the self-intersection in ambient and lifted space."""
-    from scipy.embedded import cKDTree
+    from scipy.spatial import cKDTree
 
     pts = lifted.embedded
     embed = lifted.embedding_vector(alpha=alpha)
@@ -137,8 +144,8 @@ def _find_knn(lifted: BlowUpLevel, *, k: int = 80, alpha: float = 1.0):
 
 
 _CMAP = plt.get_cmap("RdBu_r")
-_COLOR_BLUE = _CMAP(1.0)   # query point
-_COLOR_RED = _CMAP(0.0)    # neighbors
+_COLOR_BLUE = _CMAP(0.9)  # query point — slightly lighter
+_COLOR_RED = _CMAP(0.1)   # neighbors — slightly lighter
 
 
 def _plot_knn_panel(ax, pts, query_idx, idx_nn, dist_nn, *, title, s=9):
@@ -212,4 +219,11 @@ def _plot_combined(pts, P, query_idx, idx_amb, dist_amb, idx_lift, dist_lift, *,
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Nash blow-up of a figure-8 curve")
+    parser.add_argument(
+        "--mode", choices=["all", "projector", "knn", "combined"],
+        default="all",
+        help="Which figure(s) to produce (default: all)",
+    )
+    args = parser.parse_args()
+    main(mode=args.mode)
