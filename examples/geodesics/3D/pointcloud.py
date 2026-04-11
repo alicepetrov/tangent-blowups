@@ -363,14 +363,22 @@ def main():
     )
     parser.add_argument("--k", type=int, default=20)
     parser.add_argument("--alpha", type=float, default=1.0)
-    parser.add_argument("--n-lifts", type=int, default=1, choices=[1, 2],
-                        help="Number of blow-up levels (1 or 2).")
+    parser.add_argument("--levels", type=str, default="1",
+                        choices=["1", "2", "both"],
+                        help="Blow-up levels to show: 1, 2, or both.")
+    parser.add_argument("--spread", type=str, default="partial",
+                        choices=["partial", "full", "both"],
+                        help="Which rows to show: partial, full, or both.")
     parser.add_argument("--sigma-x", type=float, default=0.5)
     parser.add_argument("--sigma-u", type=float, default=0.5)
     parser.add_argument("--t-scale-lifted", type=float, default=1.0,
                         help="Time-scale multiplier for the lifted method.")
     parser.add_argument("--t-scale-robust", type=float, default=1.0,
                         help="Time-scale multiplier for the robust method.")
+    parser.add_argument("--partial-steps", type=int, default=1,
+                        help="Diffusion steps for partial spread (top row).")
+    parser.add_argument("--full-steps", type=int, default=20,
+                        help="Diffusion steps for full spread (bottom row).")
     parser.add_argument(
         "--rotate", "-r", type=str, default=None,
         help="Rotation: 'x', 'y', or 'ANGLE,AX,AY,AZ'",
@@ -420,19 +428,50 @@ def main():
         normals = normals @ R.T
         print(f"Applied rotation: --rotate {args.rotate}")
 
-    n_lifts = args.n_lifts
-    level = _build_level(points, normals, alpha=alpha, k=k, n_lifts=n_lifts)
-    print(f"Built level-{n_lifts} BlowUpLevel: N={level.N}, D={level.D}, d={level.d}")
+    # -- Build levels --
+    level1 = level2 = None
+    if args.levels in ("1", "both"):
+        level1 = _build_level(points, normals, alpha=alpha, k=k, n_lifts=1)
+        print(f"Built level-1: N={level1.N}, D={level1.D}, d={level1.d}")
+    if args.levels in ("2", "both"):
+        level2 = _build_level(points, normals, alpha=alpha, k=k, n_lifts=2)
+        print(f"Built level-2: N={level2.N}, D={level2.D}, d={level2.d}")
 
-    # Spacing between copies
+    # -- Build panel grid --
+    columns = []
+    if level1 is not None:
+        columns.append(("lift1", level1))
+    if level2 is not None:
+        columns.append(("lift2", level2))
+    columns.append(("robust", None))
+
+    rows = []
+    if args.spread in ("partial", "both"):
+        rows.append(("partial", args.partial_steps))
+    if args.spread in ("full", "both"):
+        rows.append(("full", args.full_steps))
+
+    # Panel names: "row/col"
+    all_panels = []
+    for row_name, _ in rows:
+        for col_name, _ in columns:
+            all_panels.append(f"{row_name}/{col_name}")
+
+    n_cols = len(columns)
+    n_rows = len(rows)
+
+    # Spacing
     bbox_x = points[:, 0].max() - points[:, 0].min()
-    spacing = bbox_x * 3
+    bbox_z = points[:, 2].max() - points[:, 2].min()
+    x_spacing = bbox_x * 1.5
+    y_spacing = max(bbox_z, bbox_x) * 1.5
 
-    # Pre-compute positioned points per method (offset along x).
-    method_points = {}
-    for i, method in enumerate(METHODS):
-        offset = np.array([i * spacing, 0.0, 0.0])
-        method_points[method] = points + offset
+    # Place panels in a grid
+    panel_offsets = {}
+    for ri, (row_name, _) in enumerate(rows):
+        for ci, (col_name, _) in enumerate(columns):
+            pname = f"{row_name}/{col_name}"
+            panel_offsets[pname] = np.array([ci * x_spacing, -ri * y_spacing, 0.0])
 
     # -- Mutable UI state --
     state = {
@@ -441,22 +480,51 @@ def main():
         "show_bands": False,
         "t_scale_lifted": args.t_scale_lifted,
         "t_scale_robust": args.t_scale_robust,
-        "alpha": alpha,
-        "n_lifts": n_lifts,
-        "level": level,
         "uniform_regression": False,
-        "diffusion_steps": 1,
     }
-    for m in METHODS:
-        state[f"{m}_smooth"] = None
-        state[f"{m}_bands"] = None
+    for p in all_panels:
+        state[f"{p}_smooth"] = None
+        state[f"{p}_bands"] = None
+
+    def _compute_panel(panel_name, source_index):
+        row_name, col_name = panel_name.split("/")
+        diff_steps = dict(rows)[row_name]
+        _, level = [(c, l) for c, l in columns if c == col_name][0]
+
+        if col_name == "robust":
+            t_s = state["t_scale_robust"]
+            dist, u = _compute_robust(points, source_index, k=k, t_scale=t_s)
+        else:
+            t_s = state["t_scale_lifted"]
+            dist, u = _compute_lifted(
+                level, points, source_index,
+                k=k, sigma_x=sigma_x, sigma_u=sigma_u, t_scale=t_s,
+                uniform_regression=state["uniform_regression"],
+                diffusion_steps=diff_steps,
+            )
+
+        smooth, bands = _dist_to_colors(dist, u, len(points))
+        state[f"{panel_name}_smooth"] = smooth
+        state[f"{panel_name}_bands"] = bands
+
+        cloud = ps.get_point_cloud(panel_name)
+        cloud.add_color_quantity("geodesic", smooth, enabled=True)
+
+        # Source marker
+        src_tag = f"src_{panel_name.replace('/', '_')}"
+        if ps.has_point_cloud(src_tag):
+            ps.remove_point_cloud(src_tag)
+        src_pt = (points[source_index:source_index + 1]
+                  + panel_offsets[panel_name])
+        sc = ps.register_point_cloud(src_tag, src_pt, radius=0.005)
+        sc.set_color((0.0, 1.0, 1.0))
 
     def callback():
         psim.TextUnformatted("Ctrl+click any copy to select source")
         psim.Separator()
 
         pick = ps.get_selection()
-        have = pick.is_hit and pick.structure_name in METHODS
+        have = pick.is_hit and pick.structure_name in all_panels
 
         if have:
             picked = pick.local_index
@@ -466,34 +534,15 @@ def main():
             idx = state["source_index"]
             psim.TextUnformatted(f"Source: {idx}  ({points[idx].round(2)})")
 
-        # Per-method time-scale inputs
         _, state["t_scale_lifted"] = psim.InputFloat(
             "t_scale (lifted)", state["t_scale_lifted"],
         )
         _, state["t_scale_robust"] = psim.InputFloat(
             "t_scale (robust)", state["t_scale_robust"],
         )
-
-        # Alpha and lift level (require rebuilding)
-        _, state["alpha"] = psim.InputFloat("alpha", state["alpha"])
-        _, state["n_lifts"] = psim.InputInt("n_lifts", state["n_lifts"])
-        state["n_lifts"] = max(1, min(state["n_lifts"], 2))
-        if psim.Button("Rebuild level"):
-            nl = state["n_lifts"]
-            print(f"Rebuilding level-{nl} BlowUpLevel with alpha={state['alpha']:.3f}...")
-            state["level"] = _build_level(
-                points, normals, alpha=state["alpha"], k=k, n_lifts=nl,
-            )
-            print(f"Done: N={state['level'].N}, D={state['level'].D}")
-
-        # Regression weights and diffusion steps
         _, state["uniform_regression"] = psim.Checkbox(
             "Uniform regression (w=1)", state["uniform_regression"],
         )
-        _, state["diffusion_steps"] = psim.InputInt(
-            "Diffusion steps", state["diffusion_steps"],
-        )
-        state["diffusion_steps"] = max(1, state["diffusion_steps"])
 
         if have:
             if psim.Button("Compute geodesics"):
@@ -501,17 +550,17 @@ def main():
                 state["computing"] = True
 
         # Level-set toggle
-        has_results = any(state[f"{m}_smooth"] is not None for m in METHODS)
+        has_results = any(state[f"{p}_smooth"] is not None for p in all_panels)
         if has_results:
             changed, new_val = psim.Checkbox("Level sets", state["show_bands"])
             if changed:
                 state["show_bands"] = new_val
-                for m in METHODS:
-                    sm = state[f"{m}_smooth"]
-                    bd = state[f"{m}_bands"]
+                for p in all_panels:
+                    sm = state[f"{p}_smooth"]
+                    bd = state[f"{p}_bands"]
                     if sm is not None:
                         c = bd if new_val else sm
-                        ps.get_point_cloud(m).add_color_quantity(
+                        ps.get_point_cloud(p).add_color_quantity(
                             "geodesic", c, enabled=True,
                         )
 
@@ -519,25 +568,29 @@ def main():
             state["computing"] = False
             idx = state["source_index"]
             print(f"Computing geodesics from point {idx}...")
-            for m in METHODS:
-                _compute_and_display(
-                    m, state["level"], points, idx, state,
-                    k=k, sigma_x=sigma_x, sigma_u=sigma_u,
-                    t_scale=state[f"t_scale_{m}"],
-                    method_points=method_points,
-                    uniform_regression=state["uniform_regression"],
-                    diffusion_steps=state["diffusion_steps"],
-                )
+            for p in all_panels:
+                print(f"  [{p}] computing...")
+                _compute_panel(p, idx)
+                print(f"  [{p}] done")
+
+        if psim.Button("Screenshot"):
+            fname = f"geodesic_{args.pointcloud}.png"
+            ps.screenshot(fname, transparent_bg=False)
+            print(f"Saved {fname}")
 
     # -- Polyscope setup --
     ps.init()
     ps.set_ground_plane_mode("shadow_only")
 
-    for method in METHODS:
-        cloud = ps.register_point_cloud(method, method_points[method], radius=0.001)
+    for p in all_panels:
+        cloud = ps.register_point_cloud(
+            p, points + panel_offsets[p], radius=0.001,
+        )
         cloud.set_color((0.7, 0.7, 0.7))
 
-    print(f"Copies placed side-by-side: {' | '.join(METHODS)}")
+    col_labels = [c for c, _ in columns]
+    row_labels = [f"{r} ({s} steps)" for r, s in rows]
+    print(f"Grid: {' | '.join(col_labels)}  x  {' / '.join(row_labels)}")
     ps.set_user_callback(callback)
     ps.show()
 
