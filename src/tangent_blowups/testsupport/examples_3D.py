@@ -862,6 +862,290 @@ def plane_paraboloid_tangent(scale_xy: float = 1.0, scale_z: float = 0.25) -> Pa
     return ParametricSurface(position=pos, tangent=tan, normal=norm)
 
 
+def paraboloids_tangent(
+    k1: float = 0.25,
+    k2: float = 1.0,
+    scale_xy: float = 1.0,
+) -> ParametricSurface:
+    """
+    Two cylindrical paraboloids tangent along the y-axis.
+
+    Sheet 0:  z = k1 * x^2
+    Sheet 1:  z = k2 * x^2
+
+    Both sheets share position *and* tangent plane along the entire y-axis
+    (x = 0), where z = 0 and the tangent plane is the xy-plane.  They differ
+    only in curvature (k1 vs k2), so only the level-2 blow-up can metrically
+    distinguish them near the tangency line.
+
+    Domain:
+      u in [0, 2), v in [0, 1]
+      floor(u) selects the sheet (0 or 1).
+    """
+    curvatures = [float(k1), float(k2)]
+
+    def pos(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.clip(np.floor(u).astype(int), 0, 1)
+        s = u - face
+        a = (s - 0.5) * 2.0 * scale_xy   # x
+        b = (v - 0.5) * 2.0 * scale_xy   # y
+        k = np.where(face == 0, curvatures[0], curvatures[1])
+        z = k * a ** 2
+        return np.stack([a, b, z], axis=-1)
+
+    def tan(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.clip(np.floor(u).astype(int), 0, 1)
+        s = u - face
+        a = (s - 0.5) * 2.0 * scale_xy
+        k = np.where(face == 0, curvatures[0], curvatures[1])
+
+        du = np.stack([
+            np.full_like(a, 2.0 * scale_xy),
+            np.zeros_like(a),
+            2.0 * k * a * 2.0 * scale_xy,
+        ], axis=-1)
+        dv = np.stack([
+            np.zeros_like(a),
+            np.full_like(a, 2.0 * scale_xy),
+            np.zeros_like(a),
+        ], axis=-1)
+        e1 = normalize_vectors(du)
+        dv_perp = dv - np.sum(dv * e1, axis=-1, keepdims=True) * e1
+        e2 = normalize_vectors(dv_perp)
+        return np.stack([e1, e2], axis=-1)
+
+    def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.clip(np.floor(u).astype(int), 0, 1)
+        s = u - face
+        a = (s - 0.5) * 2.0 * scale_xy
+        k = np.where(face == 0, curvatures[0], curvatures[1])
+
+        du = np.stack([
+            np.full_like(a, 2.0 * scale_xy),
+            np.zeros_like(a),
+            2.0 * k * a * 2.0 * scale_xy,
+        ], axis=-1)
+        dv = np.stack([
+            np.zeros_like(a),
+            np.full_like(a, 2.0 * scale_xy),
+            np.zeros_like(a),
+        ], axis=-1)
+        n = np.cross(du, dv)
+        return normalize_vectors(n)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
+def hemisphere_paraboloid_tangent(
+    radius: float = 1.0,
+    k: float = 1.0,
+    scale_xy: float = 0.8,
+) -> ParametricSurface:
+    """
+    Hemisphere and paraboloid tangent at the origin.
+
+    Sheet 0 (hemisphere):  z = R - sqrt(R^2 - x^2 - y^2),  centered at (0,0,R)
+    Sheet 1 (paraboloid):  z = k * (x^2 + y^2)
+
+    Both surfaces touch at the origin with tangent plane z = 0.  The
+    hemisphere has Gaussian curvature 1/R^2 everywhere; the paraboloid
+    has curvature 2k at the origin.  When k != 1/(2R) the curvatures
+    differ, so only the level-2 blow-up can separate them near the
+    tangency point.
+
+    If k > 1/(2R) the paraboloid is steeper and they intersect along a
+    circle, giving a ring of near-tangency.
+
+    Points with x^2 + y^2 >= R^2 (outside the hemisphere domain) are
+    returned as NaN and should be filtered.
+
+    Domain:
+      u in [0, 2), v in [0, 1]
+      floor(u) selects the sheet (0 = hemisphere, 1 = paraboloid).
+    """
+    R = float(radius)
+
+    def pos(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.clip(np.floor(u).astype(int), 0, 1)
+        s = u - face
+        a = (s - 0.5) * 2.0 * scale_xy
+        b = (v - 0.5) * 2.0 * scale_xy
+
+        r2 = a ** 2 + b ** 2
+        z_hemi = R - np.sqrt(np.maximum(R ** 2 - r2, 0.0))
+        z_para = k * r2
+        # Outside hemisphere domain -> NaN
+        outside = r2 >= R ** 2
+        z_hemi = np.where(outside, np.nan, z_hemi)
+
+        z = np.where(face == 0, z_hemi, z_para)
+        return np.stack([a, b, z], axis=-1)
+
+    def tan(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.clip(np.floor(u).astype(int), 0, 1)
+        s = u - face
+        a = (s - 0.5) * 2.0 * scale_xy
+        b = (v - 0.5) * 2.0 * scale_xy
+
+        r2 = a ** 2 + b ** 2
+        denom = np.sqrt(np.maximum(R ** 2 - r2, 1e-30))
+        dz_da_hemi = a / denom
+        dz_db_hemi = b / denom
+        outside = r2 >= R ** 2
+        dz_da_hemi = np.where(outside, np.nan, dz_da_hemi)
+        dz_db_hemi = np.where(outside, np.nan, dz_db_hemi)
+
+        dz_da = np.where(face == 0, dz_da_hemi, 2.0 * k * a)
+        dz_db = np.where(face == 0, dz_db_hemi, 2.0 * k * b)
+
+        c = 2.0 * scale_xy
+        du = np.stack([np.full_like(a, c), np.zeros_like(a), dz_da * c], axis=-1)
+        dv = np.stack([np.zeros_like(a), np.full_like(a, c), dz_db * c], axis=-1)
+
+        e1 = normalize_vectors(du)
+        dv_perp = dv - np.sum(dv * e1, axis=-1, keepdims=True) * e1
+        e2 = normalize_vectors(dv_perp)
+        return np.stack([e1, e2], axis=-1)
+
+    def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.clip(np.floor(u).astype(int), 0, 1)
+        s = u - face
+        a = (s - 0.5) * 2.0 * scale_xy
+        b = (v - 0.5) * 2.0 * scale_xy
+
+        r2 = a ** 2 + b ** 2
+        denom = np.sqrt(np.maximum(R ** 2 - r2, 1e-30))
+        dz_da_hemi = a / denom
+        dz_db_hemi = b / denom
+        outside = r2 >= R ** 2
+        dz_da_hemi = np.where(outside, np.nan, dz_da_hemi)
+        dz_db_hemi = np.where(outside, np.nan, dz_db_hemi)
+
+        dz_da = np.where(face == 0, dz_da_hemi, 2.0 * k * a)
+        dz_db = np.where(face == 0, dz_db_hemi, 2.0 * k * b)
+
+        c = 2.0 * scale_xy
+        du = np.stack([np.full_like(a, c), np.zeros_like(a), dz_da * c], axis=-1)
+        dv = np.stack([np.zeros_like(a), np.full_like(a, c), dz_db * c], axis=-1)
+
+        n = np.cross(du, dv)
+        return normalize_vectors(n)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
+def nested_bowls(
+    k1: float = 0.3,
+    k2: float = 0.6,
+    r_max: float = 0.8,
+) -> ParametricSurface:
+    """
+    Two rotationally-symmetric paraboloid bowls on a shared disk.
+
+    Sheet 0:  z = k1 * (x^2 + y^2)
+    Sheet 1:  z = k2 * (x^2 + y^2)
+
+    Both are sampled on the disk of radius ``r_max``.  Because the
+    curvatures are close and the domain is compact, the two surfaces
+    remain close and nearly parallel throughout.  Position and normal
+    are similar everywhere, so bilateral and level-1 kernels struggle
+    to separate them.  Only the level-2 blow-up (which encodes
+    curvature) cleanly distinguishes the two sheets.
+
+    Uses polar parametrisation (area-uniform in ``v``) to avoid
+    wasting samples outside a circle:
+
+        theta = 2 * pi * (u - floor(u)),   r = r_max * sqrt(v)
+
+    Domain:
+      u in [0, 2), v in [0, 1]
+      floor(u) selects the sheet (0 or 1).
+    """
+    def pos(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.clip(np.floor(u).astype(int), 0, 1)
+        theta = 2.0 * np.pi * (u - face)
+        r = r_max * np.sqrt(np.clip(v, 0, 1))
+        x = r * np.cos(theta)
+        y = r * np.sin(theta)
+        k = np.where(face == 0, k1, k2)
+        z = k * (x ** 2 + y ** 2)
+        return np.stack([x, y, z], axis=-1)
+
+    def tan(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.clip(np.floor(u).astype(int), 0, 1)
+        theta = 2.0 * np.pi * (u - face)
+        r = r_max * np.sqrt(np.clip(v, 0, 1))
+        x = r * np.cos(theta)
+        y = r * np.sin(theta)
+        k = np.where(face == 0, k1, k2)
+
+        ct, st = np.cos(theta), np.sin(theta)
+        denom_v = np.maximum(np.sqrt(np.clip(v, 1e-12, 1)), 1e-6)
+        dr_dv = r_max / (2.0 * denom_v)
+
+        # d/d(theta) direction
+        dx_dt = -r * st * 2.0 * np.pi
+        dy_dt = r * ct * 2.0 * np.pi
+        dz_dt = k * 2.0 * (x * dx_dt + y * dy_dt)
+        du_vec = np.stack([dx_dt, dy_dt, dz_dt], axis=-1)
+
+        # d/dv direction
+        dx_dv = ct * dr_dv
+        dy_dv = st * dr_dv
+        dz_dv = k * 2.0 * (x * dx_dv + y * dy_dv)
+        dv_vec = np.stack([dx_dv, dy_dv, dz_dv], axis=-1)
+
+        e1 = normalize_vectors(du_vec)
+        dv_perp = dv_vec - np.sum(dv_vec * e1, axis=-1, keepdims=True) * e1
+        e2 = normalize_vectors(dv_perp)
+        return np.stack([e1, e2], axis=-1)
+
+    def norm(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        face = np.clip(np.floor(u).astype(int), 0, 1)
+        theta = 2.0 * np.pi * (u - face)
+        r = r_max * np.sqrt(np.clip(v, 0, 1))
+        x = r * np.cos(theta)
+        y = r * np.sin(theta)
+        k = np.where(face == 0, k1, k2)
+
+        ct, st = np.cos(theta), np.sin(theta)
+        denom_v = np.maximum(np.sqrt(np.clip(v, 1e-12, 1)), 1e-6)
+        dr_dv = r_max / (2.0 * denom_v)
+
+        dx_dt = -r * st * 2.0 * np.pi
+        dy_dt = r * ct * 2.0 * np.pi
+        dz_dt = k * 2.0 * (x * dx_dt + y * dy_dt)
+        du_vec = np.stack([dx_dt, dy_dt, dz_dt], axis=-1)
+
+        dx_dv = ct * dr_dv
+        dy_dv = st * dr_dv
+        dz_dv = k * 2.0 * (x * dx_dv + y * dy_dv)
+        dv_vec = np.stack([dx_dv, dy_dv, dz_dv], axis=-1)
+
+        n = np.cross(du_vec, dv_vec)
+        return normalize_vectors(n)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
 def tangent_spheres(radius: float = 1.0) -> ParametricSurface:
     """
     Two spheres tangent at the origin.

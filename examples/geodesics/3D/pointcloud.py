@@ -30,10 +30,8 @@ from scipy.sparse.csgraph import connected_components
 
 from tangent_blowups.io.load import load_pointcloud
 from tangent_blowups.pointcloud import lifted_heat_method, precompute_heat_method
-from tangent_blowups.pointcloud.geodesic_heat import (
-    _normals_to_tangent_frames,
-    _auto_estimate_product_bandwidths,
-)
+from tangent_blowups.pointcloud.geodesic_heat import _normals_to_tangent_frames
+from tangent_blowups.geometry.kernels import estimate_product_bandwidths
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.solvers.linalg import normalize_vectors
 
@@ -440,7 +438,7 @@ def main():
         help="Name or path of the point cloud (.npz). Omit to list available.",
     )
     parser.add_argument("--k", type=int, default=20)
-    parser.add_argument("--alpha", type=float, default=5.0)
+    parser.add_argument("--alpha", type=float, default=5.0) # TODO Need to note this in the paper
     parser.add_argument("--levels", type=str, default="1",
                         choices=["1", "2", "both"],
                         help="Blow-up levels to show: 1, 2, or both.")
@@ -530,7 +528,7 @@ def main():
         """Auto-estimate bandwidths for a level, respecting CLI overrides."""
         if sigma_x is not None and sigma_u is not None:
             return sigma_x, [sigma_u] * lev.level
-        auto_sx, auto_su = _auto_estimate_product_bandwidths(lev, k)
+        auto_sx, auto_su = estimate_product_bandwidths(lev, k)
         sx = sigma_x if sigma_x is not None else auto_sx
         su = [sigma_u] * lev.level if sigma_u is not None else auto_su
         return sx, su

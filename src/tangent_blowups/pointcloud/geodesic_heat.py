@@ -32,6 +32,7 @@ from scipy.sparse.csgraph import connected_components
 
 from ..geometry.iterated_grassmann import BlowUpLevel
 from ..geometry.kernels import (
+    estimate_product_bandwidths,
     lifted_affinity,
     product_affinity,
     affinity_to_laplacian,
@@ -321,52 +322,6 @@ def _coerce_to_level(
     return level
 
 
-def _auto_estimate_product_bandwidths(
-    level: BlowUpLevel,
-    k: int,
-) -> tuple[float, list[float]]:
-    """Estimate sigma_x and per-lift sigma_u from median k-NN distances.
-
-    The product metric at level ell decomposes into ell + 1 factors:
-    spatial + one per embedded projector block (one per lift).  This
-    function returns one angular bandwidth per factor of the product
-    metric:
-
-    - Level 1 (1 lift):  ``[sigma_tangent]``
-    - Level 2 (2 lifts): ``[sigma_tangent, sigma_curvature]``
-
-    Each bandwidth is the median k-NN distance in the corresponding
-    block, scaled by ``sqrt(n_factors)`` to compensate for the
-    multiplicative effect of multiple kernel factors.
-
-    Returns:
-        ``(sigma_x, sigma_u_list)`` — spatial bandwidth and a list of
-        ``level.level`` angular bandwidths (one per lift).
-    """
-    rows, cols, _ = _knn_edges(level.embedded, k)
-
-    # Spatial distances
-    positions = level.embedded[:, :level.n_orig]
-    dx = positions[rows] - positions[cols]
-    dist_x = np.sqrt(np.einsum("ij,ij->i", dx, dx))
-    dist_x = dist_x[dist_x > 0.0]
-    sigma_x = float(np.median(dist_x)) if dist_x.size > 0 else 1.0
-
-    # One angular bandwidth per embedded projector block (one per lift)
-    sigmas_u: list[float] = []
-    for _m, (start, ncols, scale) in enumerate(level._proj_blocks):
-        diff = (level.embedded[rows, start:start + ncols]
-                - level.embedded[cols, start:start + ncols])
-        raw_dist = np.sqrt(np.einsum("ij,ij->i", diff, diff))
-        true_dist = raw_dist / scale
-        true_dist = true_dist[true_dist > 0.0]
-        sigmas_u.append(
-            float(np.median(true_dist)) if true_dist.size > 0 else 1.0
-        )
-
-    return sigma_x, sigmas_u
-
-
 def lifted_heat_method(
     points_or_sample: BlowUpLevel | np.ndarray,
     subspace_basis: np.ndarray | None = None,
@@ -521,7 +476,7 @@ def lifted_heat_method(
         if kernel == "product":
             sx, su = sigma_x, sigma_u
             if sx is None or su is None:
-                auto_sx, auto_su = _auto_estimate_product_bandwidths(
+                auto_sx, auto_su = estimate_product_bandwidths(
                     level, k_eff,
                 )
                 if sx is None:
@@ -676,7 +631,7 @@ def precompute_heat_method(
     if kernel == "product":
         sx, su = sigma_x, sigma_u
         if sx is None or su is None:
-            auto_sx, auto_su = _auto_estimate_product_bandwidths(level, k)
+            auto_sx, auto_su = estimate_product_bandwidths(level, k)
             if sx is None:
                 sx = auto_sx
             if su is None:
