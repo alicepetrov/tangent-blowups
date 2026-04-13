@@ -28,8 +28,8 @@ from tangent_blowups.testsupport import (
 )
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.geometry.kernels import lifted_laplacian
-from tangent_blowups.clustering import spectral_embedding_from_laplacian
-from tangent_blowups.pointcloud.laplacian import laplacian_spectrum
+from tangent_blowups.clustering import spectral_embedding
+from tangent_blowups.solvers.eigen import laplacian_spectrum
 from tangent_blowups.io.load import load_pointcloud
 from tangent_blowups.solvers.linalg import normalize_vectors
 
@@ -129,11 +129,12 @@ def _spectral_labels(level: BlowUpLevel, n_components: int | None,
 
     Returns (labels, n_components_used).
     """
-    L, _, _ = lifted_laplacian(level, kernel="self_tuning", k=K,
-                                h="local", normalized=True)
+    L, _, _ = lifted_laplacian(
+        level, kernel="product", self_tuning=True, k=K, normalized=True,
+    )
     if n_components is None:
         n_components = _eigengap_n_components(L, cap=N_SPECTRAL_PROBE)
-    _, _, emb = spectral_embedding_from_laplacian(
+    _, emb = spectral_embedding(
         L, n_components=n_components, drop_first=True, normalize_rows=True,
     )
     return HDBSCAN(min_cluster_size=min_cluster_size).fit_predict(emb), n_components

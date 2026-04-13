@@ -12,13 +12,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 
-from sklearn.cluster import HDBSCAN
+from sklearn.cluster import HDBSCAN, DBSCAN, KMeans
 
-from tangent_blowups.clustering import spectral_clustering_from_laplacian
+from tangent_blowups.clustering import spectral_embedding
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.geometry.kernels import lifted_laplacian
 from tangent_blowups.io.load import load_pointcloud
-from tangent_blowups.pointcloud import pointcloud_laplacian
 from tangent_blowups.solvers.linalg import normalize_vectors
 
 
@@ -194,7 +193,7 @@ def main():
     )
     parser.add_argument(
         "--kernel", type=str, default="product",
-        choices=["self_tuning", "product"],
+        choices=["lifted", "product"],
         help="Kernel family for the lifted Laplacian (default: product).",
     )
     args = parser.parse_args()
@@ -224,15 +223,13 @@ def main():
     # ------------------------------------------------------------------
     def _cluster_laplacian(L, tag: str):
         """Return (labels_km, labels_db, labels_hdb, evals)."""
-        labels_km, evals, _, embedding = spectral_clustering_from_laplacian(
-            L, n_clusters, random_state=random_state,
-        )
-        labels_db, _, _, _ = spectral_clustering_from_laplacian(
-            L, n_clusters,
-            cluster_method="dbscan",
-            dbscan_eps=dbscan_eps,
-            dbscan_min_samples=dbscan_min_samples,
-        )
+        evals, embedding = spectral_embedding(L, n_components=n_clusters)
+        labels_km = KMeans(
+            n_clusters=n_clusters, n_init=10, random_state=random_state,
+        ).fit_predict(embedding)
+        labels_db = DBSCAN(
+            eps=dbscan_eps, min_samples=dbscan_min_samples,
+        ).fit_predict(embedding)
         labels_hdb = HDBSCAN(
             min_cluster_size=hdbscan_min_cluster_size,
         ).fit_predict(embedding)
@@ -246,10 +243,13 @@ def main():
         return labels_km, labels_db, labels_hdb, evals
 
     # ------------------------------------------------------------------
-    # Euclidean baseline (build Laplacian once)
+    # Euclidean baseline: alpha=0 lift -> pure spatial self-tuning product
     # ------------------------------------------------------------------
-    L_euc = pointcloud_laplacian(
-        points, k=k, h="local", normalized=normalized,
+    l0_euc = BlowUpLevel.from_normals(points, normals).lift(
+        k=k, alpha=0.0, lam=lam,
+    )
+    L_euc, _, _ = lifted_laplacian(
+        l0_euc, kernel="product", self_tuning=True, k=k, normalized=normalized,
     )
     euc_km, euc_db, euc_hdb, evals_euc = _cluster_laplacian(L_euc, "Euclidean")
 
@@ -270,7 +270,7 @@ def main():
         print(f"Level-{lvl}: embedded dim = {level.D}")
 
         L, _, _ = lifted_laplacian(
-            level, kernel=kernel, k=k, h="local", normalized=normalized,
+            level, kernel=kernel, self_tuning=True, k=k, normalized=normalized,
         )
         level_results[lvl] = _cluster_laplacian(L, f"Level-{lvl} {kernel}")
 

@@ -156,18 +156,24 @@ def edge_divergence_gpu(level, X_np, W):
 # Product affinity on GPU
 # ---------------------------------------------------------------------------
 
-def product_affinity_gpu(level, sigma_x, sigmas, k, rows_np, cols_np):
+def _local_bandwidths_torch(N, rows, dist2):
+    """Per-point k-NN bandwidth (max neighbor distance). Mirrors kernels._local_bandwidths."""
+    h_sq = torch.zeros(N, dtype=dist2.dtype, device=dist2.device)
+    h_sq.scatter_reduce_(0, rows, dist2, reduce="amax", include_self=True)
+    h = torch.sqrt(h_sq)
+    zero = h == 0
+    if zero.any():
+        pos = dist2[dist2 > 0]
+        fallback = float(torch.median(torch.sqrt(pos)).item()) if pos.numel() > 0 else 1.0
+        h = torch.where(zero, torch.full_like(h, fallback), h)
+    return h
+
+
+def product_affinity_gpu(level, sigma_x, sigmas, k, rows_np, cols_np, *, self_tuning=False):
     """Compute product-kernel weights on GPU given precomputed k-NN edges.
 
-    Args:
-        level:   BlowUpLevel.
-        sigma_x: Spatial bandwidth.
-        sigmas:  List of angular bandwidths per projector level.
-        k:       k-NN parameter (unused, edges already computed).
-        rows_np, cols_np: k-NN edge arrays (numpy).
-
-    Returns:
-        weights as numpy array (E,).
+    Mirrors the CPU implementation in `kernels.product_affinity`, including the
+    self-tuning branch (Zelnik-Manor pointwise bandwidth per factor).
     """
     device = torch.device("cuda")
     N = level.N
@@ -176,23 +182,26 @@ def product_affinity_gpu(level, sigma_x, sigmas, k, rows_np, cols_np):
     cols = torch.tensor(cols_np, dtype=torch.long, device=device)
     embedded = torch.tensor(level.embedded, dtype=torch.float64, device=device)
 
-    # Spatial factor
     positions = embedded[:, :level.n_orig]
     dx = positions[rows] - positions[cols]
     dist2_spatial = (dx * dx).sum(dim=1)
-    weights = torch.exp(-dist2_spatial / (sigma_x * sigma_x))
+    if self_tuning:
+        h_x = _local_bandwidths_torch(N, rows, dist2_spatial)
+        weights = torch.exp(-dist2_spatial / (h_x[rows] * h_x[cols]))
+    else:
+        weights = torch.exp(-dist2_spatial / (sigma_x * sigma_x))
 
-    # Angular factors: one per lift (from the product metric)
     for m, (start, ncols_, scale) in enumerate(level._proj_blocks):
-        # alpha=0 lift -> scale=0 -> projector block is zero, factor is 1.
         if scale == 0.0:
             continue
         diff = embedded[rows, start:start + ncols_] - embedded[cols, start:start + ncols_]
         scaled_dist2 = (diff * diff).sum(dim=1)
-        # sigma_u is intrinsic (bandwidth on ||P_diff||_F); scaled_dist2 already
-        # carries the alpha/2 scale from the embedding. Denominator is sigma_u^2
-        # only -- see matching CPU path in kernels.product_affinity.
-        weights = weights * torch.exp(-scaled_dist2 / (sigmas[m] * sigmas[m]))
+        if self_tuning:
+            intrinsic_dist2 = scaled_dist2 / (scale * scale)
+            h_u = _local_bandwidths_torch(N, rows, intrinsic_dist2)
+            weights = weights * torch.exp(-intrinsic_dist2 / (h_u[rows] * h_u[cols]))
+        else:
+            weights = weights * torch.exp(-scaled_dist2 / (sigmas[m] * sigmas[m]))
 
     return weights.cpu().numpy()
 

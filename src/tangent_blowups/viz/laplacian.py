@@ -13,7 +13,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 from scipy import sparse
 
-from ..pointcloud.laplacian import laplacian_spectrum
+from ..solvers.eigen import laplacian_spectrum
 
 
 def _as_points(points: np.ndarray) -> np.ndarray:

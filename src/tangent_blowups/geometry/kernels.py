@@ -332,10 +332,11 @@ def uniform_affinity(
 
 def product_affinity(
     level: BlowUpLevel,
-    sigma_x: float,
-    sigma_u: float | list[float] | np.ndarray,
+    sigma_x: float | None = None,
+    sigma_u: float | list[float] | np.ndarray | None = None,
     *,
     k: int = 20,
+    self_tuning: bool = False,
     symmetrize: bool = True,
     device: str = "cpu",
 ) -> sparse.csr_matrix:
@@ -377,24 +378,30 @@ def product_affinity(
     Returns:
         Sparse symmetric (N, N) affinity matrix.
     """
-    if sigma_x <= 0.0:
-        raise ValueError(f"sigma_x must be positive, got {sigma_x}.")
-
     n_lifts = level.level   # one angular factor per lift (= len(_proj_blocks))
-    if isinstance(sigma_u, (int, float)):
-        sigma_u_val = float(sigma_u)
-        if sigma_u_val <= 0.0:
-            raise ValueError(f"sigma_u must be positive, got {sigma_u_val}.")
-        sigmas = [sigma_u_val] * max(n_lifts, 1)
+    if self_tuning:
+        sigmas: list[float] = []  # unused in self-tuning branch
     else:
-        sigmas = [float(s) for s in sigma_u]
-        if len(sigmas) != n_lifts:
+        if sigma_x is None or sigma_x <= 0.0:
             raise ValueError(
-                f"sigma_u sequence has length {len(sigmas)}, expected "
-                f"{n_lifts} (one per lift)."
+                f"sigma_x must be positive when self_tuning=False, got {sigma_x}."
             )
-        if any(s <= 0.0 for s in sigmas):
-            raise ValueError("All sigma_u entries must be positive.")
+        if isinstance(sigma_u, (int, float)):
+            sigma_u_val = float(sigma_u)
+            if sigma_u_val <= 0.0:
+                raise ValueError(f"sigma_u must be positive, got {sigma_u_val}.")
+            sigmas = [sigma_u_val] * max(n_lifts, 1)
+        elif sigma_u is None:
+            raise ValueError("sigma_u is required when self_tuning=False.")
+        else:
+            sigmas = [float(s) for s in sigma_u]
+            if len(sigmas) != n_lifts:
+                raise ValueError(
+                    f"sigma_u sequence has length {len(sigmas)}, expected "
+                    f"{n_lifts} (one per lift)."
+                )
+            if any(s <= 0.0 for s in sigmas):
+                raise ValueError("All sigma_u entries must be positive.")
 
     N = level.N
     if N == 0:
@@ -410,6 +417,7 @@ def product_affinity(
             from ._gpu_ops import product_affinity_gpu
             weights = product_affinity_gpu(
                 level, sigma_x, sigmas, k, rows, cols,
+                self_tuning=self_tuning,
             )
             return _assemble_affinity(
                 N, rows, cols, weights, symmetrize=symmetrize,
@@ -421,12 +429,17 @@ def product_affinity(
     positions = level.embedded[:, :level.n_orig]
     dx = positions[rows] - positions[cols]
     dist2_spatial = np.einsum("ij,ij->i", dx, dx)
-    weights = np.exp(-dist2_spatial / (sigma_x * sigma_x))
+    if self_tuning:
+        h_x = _local_bandwidths(N, rows, dist2_spatial)
+        weights = np.exp(-dist2_spatial / (h_x[rows] * h_x[cols]))
+    else:
+        weights = np.exp(-dist2_spatial / (sigma_x * sigma_x))
 
     # --- Angular factors: one per lift (from the product metric) ---
     # Each _proj_block corresponds to one factor of the product space.
-    # At level ell the embedding is [x, alpha*vec(P^0), ..., alpha*vec(P^{ell-1})]
-    # and the product metric decomposes into ell+1 terms (spatial + ell angular).
+    # At level ell the embedding is [x, scale*vec(P^0), ..., scale*vec(P^{ell-1})]
+    # with scale = sqrt(alpha/2). The product metric decomposes into ell+1
+    # factors (spatial + ell angular).
     _BLOCK_CHUNK = 32
     E = rows.shape[0]
     for m, (start, ncols, scale) in enumerate(level._proj_blocks):
@@ -440,13 +453,20 @@ def product_affinity(
             diff = (level.embedded[rows, start + c0:start + c1]
                     - level.embedded[cols, start + c0:start + c1])
             scaled_dist2 += np.einsum("ij,ij->i", diff, diff)
-        # scaled_dist2 = scale^2 * ||P^(m)_i - P^(m)_j||_F^2 = (alpha/2)*||P_diff||^2.
-        # sigma_u is an intrinsic bandwidth on ||P_diff|| (see
-        # estimate_product_bandwidths, which divides the raw embedded distance
-        # by `scale`), so the denominator is sigma_u^2 -- NOT scale^2*sigma_u^2.
-        # Keeping the scale^2 here would exactly cancel the scale^2 baked into
-        # `scaled_dist2`, making alpha a no-op on the angular factor.
-        weights *= np.exp(-scaled_dist2 / (sigmas[m] * sigmas[m]))
+        if self_tuning:
+            # Use intrinsic ||P_diff||^2 = scaled_dist2 / scale^2 so the
+            # Zelnik-Manor bandwidth is in the same units as sigma_u from
+            # estimate_product_bandwidths. alpha cancels both numerator and
+            # denominator here but still affects the k-NN topology above.
+            intrinsic_dist2 = scaled_dist2 / (scale * scale)
+            h_u = _local_bandwidths(N, rows, intrinsic_dist2)
+            weights *= np.exp(-intrinsic_dist2 / (h_u[rows] * h_u[cols]))
+        else:
+            # scaled_dist2 = (alpha/2) * ||P_diff||^2 -- alpha visibly sharpens
+            # the angular factor. sigma_u is intrinsic (see
+            # estimate_product_bandwidths, which divides raw distance by scale),
+            # so the denominator is sigma_u^2, not scale^2 * sigma_u^2.
+            weights *= np.exp(-scaled_dist2 / (sigmas[m] * sigmas[m]))
 
     return _assemble_affinity(N, rows, cols, weights, symmetrize=symmetrize)
 
@@ -503,12 +523,13 @@ def affinity_to_laplacian(
 def lifted_laplacian(
     level: BlowUpLevel,
     *,
-    kernel: Literal["product", "uniform", "self_tuning"] = "product",
+    kernel: Literal["product", "uniform", "lifted"] = "product",
     k: int = 20,
+    self_tuning: bool = True,
+    sigma_x: float | None = None,
+    sigma_u: float | list[float] | None = None,
     h: float | Literal["local"] | None = "local",
-    sigma_x: float = 0.5,
-    sigma_u: float | list[float] = 0.5,
-    normalized: bool = False,
+    normalized: bool = True,
     symmetrize: bool = True,
     eps: float = 1e-12,
 ) -> tuple[sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix]:
@@ -519,29 +540,36 @@ def lifted_laplacian(
     the result to :func:`affinity_to_laplacian`.
 
     Args:
-        level:      BlowUpLevel (any level).
-        kernel:     "product" (default), "uniform", or "self_tuning".
-        k:          k-NN neighbourhood size.
-        h:          Bandwidth for "self_tuning" kernel.
-        sigma_x:    Spatial bandwidth for "product" kernel (default 0.5).
-        sigma_u:    Angular bandwidth(s) for "product" kernel (default 0.5).
-                    A single float applies the same bandwidth to all projector
-                    levels; a list assigns independent bandwidths per level.
-        normalized: Symmetric normalized Laplacian if True.
-        symmetrize: Symmetrize the affinity matrix.
-        eps:        Degree threshold for normalized Laplacian.
+        level:        BlowUpLevel (any level).
+        kernel:       "product" (default), "uniform", or "lifted" (self-tuning
+                      Gaussian on the full Chordal-Sasaki embedding).
+        k:            k-NN neighbourhood size.
+        self_tuning:  For kernel="product", use Zelnik-Manor pointwise bandwidths
+                      per factor (default True). When False, `sigma_x`/`sigma_u`
+                      are required.
+        sigma_x:      Spatial bandwidth for non-self-tuning "product" kernel.
+        sigma_u:      Angular bandwidth(s) for non-self-tuning "product" kernel.
+        h:            Bandwidth strategy for kernel="lifted".
+        normalized:   Symmetric normalized Laplacian if True (default).
+        symmetrize:   Symmetrize the affinity matrix.
+        eps:          Degree threshold for normalized Laplacian.
 
     Returns:
-        (L, W, D) — Laplacian, affinity matrix, degree matrix.
+        (L, W, D) -- Laplacian, affinity matrix, degree matrix.
     """
     if kernel == "product":
-        W = product_affinity(level, sigma_x, sigma_u, k=k, symmetrize=symmetrize)
+        W = product_affinity(
+            level, sigma_x, sigma_u,
+            k=k, self_tuning=self_tuning, symmetrize=symmetrize,
+        )
     elif kernel == "uniform":
         W = uniform_affinity(level, k=k, symmetrize=symmetrize)
-    elif kernel == "self_tuning":
+    elif kernel == "lifted":
         W = lifted_affinity(level, k=k, h=h, symmetrize=symmetrize)
     else:
-        raise ValueError(f"Unknown kernel '{kernel}'. Choose 'product', 'uniform', or 'self_tuning'.")
+        raise ValueError(
+            f"Unknown kernel '{kernel}'. Choose 'product', 'uniform', or 'lifted'."
+        )
 
     return affinity_to_laplacian(W, normalized=normalized, eps=eps)
 

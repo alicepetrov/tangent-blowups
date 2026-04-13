@@ -58,7 +58,7 @@ from tangent_blowups.testsupport import (
 )
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel, iterated_blowup
 from tangent_blowups.geometry.kernels import lifted_laplacian
-from tangent_blowups.pointcloud.laplacian import laplacian_spectrum
+from tangent_blowups.solvers.eigen import laplacian_spectrum
 
 
 # ---------------------------------------------------------------------------
@@ -178,8 +178,8 @@ def _build_L(level: BlowUpLevel, kernel: str) -> tuple:
       product     : sigma_x = median k-NN distance in original positions,
                     sigma_u = median Frobenius projector dist over k-NN pairs
     """
-    if kernel == "self_tuning":
-        return lifted_laplacian(level, kernel="self_tuning", k=K_KERNEL, h="local")
+    if kernel == "lifted":
+        return lifted_laplacian(level, kernel="lifted", k=K_KERNEL, h="local")
     if kernel == "product":
         sigma_x = _median_spatial_dist(level)
         sigma_u = _median_proj_dist(level)
@@ -306,7 +306,7 @@ def main():
     # (A) Level 0, self-tuning: k-NN in position space only.
     #     The crossing point has k-NN neighbours from BOTH lobes
     #     → affinity couples the two branches.
-    L8_A, W8_A, _ = _build_L(l8_0, "self_tuning")
+    L8_A, W8_A, _ = _build_L(l8_0, "lifted")
     ev8_A, fv8_A  = _spectrum(L8_A)
     cf8_A         = _cross_frac(W8_A, gt8)
     print(f"   (A) Level 0 self-tuning :  cross frac = {cf8_A:.2%},  "
@@ -326,7 +326,7 @@ def main():
     #     d²_1 = ||x_i - x_j||² + (α/2)||P_i - P_j||²_F.
     #     At the crossing, same-position but different tangent
     #     → large d²_1 → no cross-lobe k-NN edges at all.
-    L8_C, W8_C, _ = _build_L(l8_1, "self_tuning")
+    L8_C, W8_C, _ = _build_L(l8_1, "lifted")
     ev8_C, fv8_C  = _spectrum(L8_C)
     cf8_C         = _cross_frac(W8_C, gt8)
     print(f"   (C) Level 1 self-tuning :  cross frac = {cf8_C:.2%},  "
@@ -353,7 +353,7 @@ def main():
 
     # (D) Level 0, self-tuning: position only.
     #     Near the origin both curves have the same (x, y) → merged.
-    L_D, W_D, _ = _build_L(l0, "self_tuning")
+    L_D, W_D, _ = _build_L(l0, "lifted")
     ev_D, fv_D  = _spectrum(L_D)
     cf_D        = _cross_frac(W_D, gt_lp)
     print(f"   (D) Level 0 self-tuning :  cross frac = {cf_D:.2%},  "
@@ -362,7 +362,7 @@ def main():
     # (E) Level 1, self-tuning: position + tangent plane.
     #     Both curves share the horizontal tangent at the origin
     #     → level-1 Chordal-Sasaki still merges them there.
-    L_E, W_E, _ = _build_L(l1, "self_tuning")
+    L_E, W_E, _ = _build_L(l1, "lifted")
     ev_E, fv_E  = _spectrum(L_E)
     cf_E        = _cross_frac(W_E, gt_lp)
     print(f"   (E) Level 1 self-tuning :  cross frac = {cf_E:.2%},  "
@@ -370,7 +370,7 @@ def main():
 
     # (F) Level 2, self-tuning: position + tangent + curvature.
     #     κ_parabola ≠ κ_line → level-2 Chordal-Sasaki separates them.
-    L_F, W_F, _ = _build_L(l2, "self_tuning")
+    L_F, W_F, _ = _build_L(l2, "lifted")
     ev_F, fv_F  = _spectrum(L_F)
     cf_F        = _cross_frac(W_F, gt_lp)
     print(f"   (F) Level 2 self-tuning :  cross frac = {cf_F:.2%},  "

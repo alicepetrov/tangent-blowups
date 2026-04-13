@@ -37,7 +37,7 @@ from tangent_blowups.testsupport import examples_3D as _ex3d
 from scalar_field_bilateral_comparison import bilateral_heat_method
 
 _DATA_ROOT = Path(__file__).resolve().parents[3] / "data"
-DEFAULT_ALPHAS = [0.0, 1, 20, 50]
+DEFAULT_ALPHAS = [0, 1, 5, 10, 20]
 _HEAT_CMAPS = ["inferno", "magma", "viridis", "plasma", "coolwarm", "hot", "YlOrRd"]
 
 # Non-orientable surface registry: name -> (factory, u_range, v_range).
@@ -65,9 +65,15 @@ NON_ORIENTABLE_SURFACES = {
 
 
 def _sample_surface(name: str, nu: int, nv: int):
-    """Sample a non-orientable surface on a uniform grid.
+    """Sample a non-orientable surface with area-uniform 3D density.
 
-    Returns flattened (points, normals) of shape (nu*nv, 3) each, both finite.
+    Uses rejection sampling against the local area element |partial_u P x
+    partial_v P| so the resulting point cloud is uniformly distributed on the
+    surface itself, not on the (u, v) parameter domain. This eliminates the
+    isoparametric grid lines that show up on surfaces with strongly varying
+    parametric speed (Etruscan Venus, Boy, Mobius, etc.).
+
+    Returns flattened (points, normals) targeting nu*nv samples.
     """
     if name not in NON_ORIENTABLE_SURFACES:
         raise ValueError(
@@ -75,10 +81,43 @@ def _sample_surface(name: str, nu: int, nv: int):
         )
     factory, (u_lo, u_hi), (v_lo, v_hi) = NON_ORIENTABLE_SURFACES[name]
     surf = factory()
-    u = np.linspace(u_lo, u_hi, nu)
-    v = np.linspace(v_lo, v_hi, nv)
-    U, V = np.meshgrid(u, v, indexing="ij")
-    s = surf.evaluate(U, V, with_tangents=False, with_normals=True)
+    n_target = nu * nv
+
+    def area_element(u_, v_, h=1e-4):
+        pu_p = surf.position(u_ + h, v_); pu_m = surf.position(u_ - h, v_)
+        pv_p = surf.position(u_, v_ + h); pv_m = surf.position(u_, v_ - h)
+        du = (pu_p - pu_m) / (2.0 * h)
+        dv = (pv_p - pv_m) / (2.0 * h)
+        return np.linalg.norm(np.cross(du, dv), axis=-1)
+
+    # Coarse pass to estimate J_max and the average acceptance rate.
+    gu = np.linspace(u_lo, u_hi, 32)
+    gv = np.linspace(v_lo, v_hi, 32)
+    GU, GV = np.meshgrid(gu, gv, indexing="ij")
+    j_grid = area_element(GU, GV)
+    j_max = float(np.nanmax(j_grid))
+    if not np.isfinite(j_max) or j_max <= 0:
+        j_max = 1.0
+    j_max *= 1.05
+    avg_accept = max(float(np.nanmean(j_grid)) / j_max, 0.05)
+    batch = max(int(n_target / avg_accept) + 1024, 4096)
+
+    rng = np.random.default_rng(0)
+    u_kept: list[np.ndarray] = []
+    v_kept: list[np.ndarray] = []
+    kept = 0
+    while kept < n_target:
+        u_try = rng.uniform(u_lo, u_hi, batch)
+        v_try = rng.uniform(v_lo, v_hi, batch)
+        j_try = area_element(u_try, v_try)
+        keep = rng.uniform(0.0, j_max, batch) < j_try
+        u_kept.append(u_try[keep])
+        v_kept.append(v_try[keep])
+        kept += int(keep.sum())
+    u_flat = np.concatenate(u_kept)[:n_target]
+    v_flat = np.concatenate(v_kept)[:n_target]
+
+    s = surf.evaluate(u_flat, v_flat, with_tangents=False, with_normals=True)
     pts = np.asarray(s.points, dtype=float).reshape(-1, 3)
     nrm = np.asarray(s.normals, dtype=float).reshape(-1, 3)
     valid = np.isfinite(pts).all(axis=1) & np.isfinite(nrm).all(axis=1) & (
@@ -180,9 +219,9 @@ def main():
                         choices=sorted(NON_ORIENTABLE_SURFACES.keys()),
                         help="Sample a non-orientable surface instead of loading "
                              "a .npz point cloud. Mutually exclusive with --pointcloud.")
-    parser.add_argument("--surface-nu", type=int, default=200,
+    parser.add_argument("--surface-nu", type=int, default=300,
                         help="Grid resolution along u for --surface (default 200).")
-    parser.add_argument("--surface-nv", type=int, default=200,
+    parser.add_argument("--surface-nv", type=int, default=300,
                         help="Grid resolution along v for --surface (default 200).")
     parser.add_argument("--alphas", type=str,
                         default=",".join(str(a) for a in DEFAULT_ALPHAS),

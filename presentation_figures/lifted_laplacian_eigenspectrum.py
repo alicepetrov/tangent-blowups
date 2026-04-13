@@ -27,9 +27,8 @@ from tangent_blowups.testsupport import (
 )
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.geometry.kernels import lifted_laplacian
-from tangent_blowups.pointcloud.laplacian import (
-    pointcloud_laplacian, laplacian_spectrum,
-)
+from tangent_blowups.pointcloud.laplacian import pointcloud_laplacian
+from tangent_blowups.solvers.eigen import laplacian_spectrum
 from tangent_blowups.io.load import load_pointcloud
 from tangent_blowups.solvers.linalg import normalize_vectors
 
@@ -195,14 +194,14 @@ def _run_example(pts: np.ndarray, level0: BlowUpLevel,
     for alpha in ALPHAS:
         print(f"  alpha={alpha}: level 1...", end="", flush=True)
         l1 = level0.lift(k=K, alpha=alpha, lam=LAM)
-        L1, _, _ = lifted_laplacian(l1, kernel="self_tuning", k=K,
+        L1, _, _ = lifted_laplacian(l1, kernel="lifted", k=K,
                                     h="local", normalized=True)
         ev1, ew1 = _eigenvecs(L1, EIG_K)
         evals_l1.append(ev1); evecs_l1.append(ew1)
 
         print(" level 2...", end="", flush=True)
         l2 = l1.lift(k=K, alpha=alpha, lam=LAM)
-        L2, _, _ = lifted_laplacian(l2, kernel="self_tuning", k=K,
+        L2, _, _ = lifted_laplacian(l2, kernel="lifted", k=K,
                                     h="local", normalized=True)
         ev2, ew2 = _eigenvecs(L2, EIG_K)
         evals_l2.append(ev2); evecs_l2.append(ew2)

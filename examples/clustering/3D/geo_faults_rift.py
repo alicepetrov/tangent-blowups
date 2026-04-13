@@ -25,10 +25,9 @@ import matplotlib.pyplot as plt
 
 from sklearn.cluster import KMeans
 
-from tangent_blowups.clustering import spectral_clustering_from_laplacian
+from tangent_blowups.clustering import spectral_embedding
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.geometry.kernels import lifted_laplacian
-from tangent_blowups.pointcloud import pointcloud_laplacian
 
 
 # ---------------------------------------------------------------------------
@@ -156,59 +155,60 @@ def main() -> None:
 
     level = BlowUpLevel.from_point_tangents(points, tangent_frames)
 
+    def _cluster(L: "sparse.csr_matrix") -> tuple[np.ndarray, np.ndarray]:
+        evals, emb = spectral_embedding(L, n_components=n_clusters)
+        labels = KMeans(
+            n_clusters=n_clusters, n_init=10, random_state=random_state,
+        ).fit_predict(emb)
+        return labels, evals
+
     # ------------------------------------------------------------------
-    # 1. Euclidean: spectral embedding + KMeans
+    # 1. Euclidean (alpha=0 lift): pure spatial self-tuning product kernel
     # ------------------------------------------------------------------
-    print("Euclidean spectral embedding...")
-    L_euc = pointcloud_laplacian(points, k=k, h="local", normalized=normalized)
-    labels_euc, evals_euc, _, _ = spectral_clustering_from_laplacian(
-        L_euc, n_clusters, cluster_method="kmeans", random_state=random_state,
+    print("Euclidean spectral embedding (alpha=0)...")
+    l_euc = level.lift(k=k, alpha=0.0, lam=lam)
+    L_euc, _, _ = lifted_laplacian(
+        l_euc, kernel="product", self_tuning=True, k=k, normalized=normalized,
     )
+    labels_euc, evals_euc = _cluster(L_euc)
     _print_cluster_sizes("Euclidean KMeans", labels_euc)
 
     # ------------------------------------------------------------------
-    # 2. Self-tuning lifted Laplacian + KMeans
+    # 2. Self-tuning product Laplacian at level 1
     # ------------------------------------------------------------------
-    print("Self-tuning lifted Laplacian...")
+    print("Self-tuning product Laplacian (level 1)...")
     l1 = level.lift(k=k, alpha=alpha, lam=lam)
     print(f"  Embedded dim = {l1.D}")
 
     L_st, _, _ = lifted_laplacian(
-        l1, kernel="self_tuning", k=k, h="local", normalized=normalized,
+        l1, kernel="product", self_tuning=True, k=k, normalized=normalized,
     )
-    labels_st, evals_st, _, _ = spectral_clustering_from_laplacian(
-        L_st, n_clusters, cluster_method="kmeans", random_state=random_state,
-    )
-    _print_cluster_sizes("Self-tuning KMeans", labels_st)
+    labels_st, evals_st = _cluster(L_st)
+    _print_cluster_sizes("Self-tuning product KMeans (L1)", labels_st)
 
     # ------------------------------------------------------------------
-    # 3. Product-kernel lifted Laplacian + KMeans
+    # 3. Fixed-bandwidth product kernel at level 1
     # ------------------------------------------------------------------
-    print(f"Product-kernel lifted Laplacian (sigma_x={sigma_x}, sigma_u={sigma_u})...")
+    print(f"Fixed-bandwidth product Laplacian (sigma_x={sigma_x}, sigma_u={sigma_u})...")
     L_prod, _, _ = lifted_laplacian(
-        l1, kernel="product", sigma_x=sigma_x, sigma_u=sigma_u,
-        k=k, normalized=normalized,
+        l1, kernel="product", self_tuning=False,
+        sigma_x=sigma_x, sigma_u=sigma_u, k=k, normalized=normalized,
     )
-    labels_prod, evals_prod, _, _ = spectral_clustering_from_laplacian(
-        L_prod, n_clusters, cluster_method="kmeans", random_state=random_state,
-    )
-    _print_cluster_sizes("Product KMeans", labels_prod)
+    labels_prod, evals_prod = _cluster(L_prod)
+    _print_cluster_sizes("Fixed product KMeans (L1)", labels_prod)
 
     # ------------------------------------------------------------------
-    # 4. Second iterated blow-up: product-kernel spectral + KMeans
+    # 4. Self-tuning product Laplacian at level 2
     # ------------------------------------------------------------------
     print("Second iterated blow-up...")
     l2 = l1.lift(k=k, alpha=alpha, lam=lam)
     print(f"  Level-2 embedded dim = {l2.D}")
 
     L_l2, _, _ = lifted_laplacian(
-        l2, kernel="product", sigma_x=sigma_x, sigma_u=sigma_u,
-        k=k, normalized=normalized,
+        l2, kernel="product", self_tuning=True, k=k, normalized=normalized,
     )
-    labels_l2, evals_l2, _, _ = spectral_clustering_from_laplacian(
-        L_l2, n_clusters, cluster_method="kmeans", random_state=random_state,
-    )
-    _print_cluster_sizes("Level-2 Product KMeans", labels_l2)
+    labels_l2, evals_l2 = _cluster(L_l2)
+    _print_cluster_sizes("Level-2 self-tuning KMeans", labels_l2)
 
     # ------------------------------------------------------------------
     # Plot: 2 rows x 4 cols

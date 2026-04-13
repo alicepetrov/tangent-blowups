@@ -55,7 +55,8 @@ from scipy.spatial import cKDTree
 from tangent_blowups.testsupport import UniformCurve, tangent_parabola_line, sample
 from tangent_blowups.geometry.iterated_grassmann import iterated_blowup, BlowUpLevel
 from tangent_blowups.geometry.kernels import lifted_laplacian
-from tangent_blowups.clustering import spectral_clustering_from_laplacian
+from tangent_blowups.clustering import spectral_embedding
+from sklearn.cluster import KMeans
 from tangent_blowups.pointcloud import estimate_tangents_pca
 
 
@@ -250,10 +251,9 @@ def _run_levels(
                              k=K_BLOWUP, alpha=ALPHA, lam=LAM)
     results: list[LevelResult] = []
     for lvl_num, lvl in enumerate(levels[1:], 1):
-        L, _, _ = lifted_laplacian(lvl, kernel="self_tuning", k=K_KERNEL, h="local")
-        labels, evals, _, _ = spectral_clustering_from_laplacian(
-            L, N_CLUSTERS, random_state=SEED,
-        )
+        L, _, _ = lifted_laplacian(lvl, kernel="product", self_tuning=True, k=K_KERNEL, normalized=True)
+        evals, emb = spectral_embedding(L, n_components=N_CLUSTERS)
+        labels = KMeans(n_clusters=N_CLUSTERS, n_init=10, random_state=SEED).fit_predict(emb)
         gap = float(evals[1] - evals[0]) if len(evals) >= 2 else 0.0
         acc = _accuracy(labels, gt)
         print(f"  {label} L{lvl_num}: gap={gap:.5f}  acc={acc:.1%}")
@@ -386,10 +386,9 @@ def _branch_split_level2(
     results: list[LevelResult] = []
     for lvl_num in range(2, n_levels + 1):
         aug_lvl = aug_lvl.lift(k=K_BLOWUP, alpha=ALPHA, lam=LAM)
-        L, _, _ = lifted_laplacian(aug_lvl, kernel="self_tuning", k=K_KERNEL, h="local")
-        labels_aug, evals, _, _ = spectral_clustering_from_laplacian(
-            L, N_CLUSTERS, random_state=SEED,
-        )
+        L, _, _ = lifted_laplacian(aug_lvl, kernel="product", self_tuning=True, k=K_KERNEL, normalized=True)
+        evals, emb = spectral_embedding(L, n_components=N_CLUSTERS)
+        labels_aug = KMeans(n_clusters=N_CLUSTERS, n_init=10, random_state=SEED).fit_predict(emb)
         gap = float(evals[1] - evals[0]) if len(evals) >= 2 else 0.0
         labels = labels_aug[:N].copy()
         acc = _accuracy(labels, gt)

@@ -62,7 +62,7 @@ from tangent_blowups.io.load import load_pointcloud
 from tangent_blowups.solvers.linalg import normalize_vectors
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel, iterated_blowup
 from tangent_blowups.geometry.kernels import lifted_laplacian
-from tangent_blowups.pointcloud.laplacian import laplacian_spectrum
+from tangent_blowups.solvers.eigen import laplacian_spectrum
 
 
 # ---------------------------------------------------------------------------
@@ -222,8 +222,8 @@ def _median_proj_dist(level: BlowUpLevel) -> float:
 
 def _build_L(level: BlowUpLevel, kernel: str) -> tuple:
     """Build (L, W, D) with auto bandwidths."""
-    if kernel == "self_tuning":
-        return lifted_laplacian(level, kernel="self_tuning", k=K_KERNEL, h="local")
+    if kernel == "lifted":
+        return lifted_laplacian(level, kernel="lifted", k=K_KERNEL, h="local")
     if kernel == "product":
         sigma_x = _median_spatial_dist(level)
         sigma_u = _median_proj_dist(level)
@@ -354,7 +354,7 @@ def main():
 
     # (A) Level 0, self-tuning: purely positional
     print("   (A) Level 0, self-tuning ...")
-    L_A, _, _ = _build_L(l0, "self_tuning")
+    L_A, _, _ = _build_L(l0, "lifted")
     ev_A, modes_A = _spectrum(L_A, N_MODES)
     print(f"       Fiedler gap = {ev_A[1]-ev_A[0]:.5f}")
 
@@ -367,7 +367,7 @@ def main():
 
     # (C) Level 1, self-tuning: k-NN in Chordal-Sasaki (pos + tangent plane)
     print("   (C) Level 1, self-tuning ...")
-    L_C, _, _ = _build_L(l1, "self_tuning")
+    L_C, _, _ = _build_L(l1, "lifted")
     ev_C, modes_C = _spectrum(L_C, N_MODES)
     print(f"       Fiedler gap = {ev_C[1]-ev_C[0]:.5f}")
 

@@ -1,237 +1,91 @@
 """
-Spectral Clustering
--------------------
-Spectral clustering utilities built on point cloud Laplacians.
+Spectral clustering via Laplacian eigenmaps.
+
+Two public functions:
+
+- `spectral_embedding(L, n_components)` — the smallest-eigenvalue eigenmap of a
+  graph Laplacian.
+- `spectral_clustering(L, n_clusters)` — spectral embedding followed by
+  k-means.
+
+Both operate on any pre-built Laplacian. Build yours via
+`tangent_blowups.geometry.kernels.lifted_laplacian` (self-tuning product kernel
+by default).
 """
 from __future__ import annotations
 
-from typing import Literal, Optional
-
 import numpy as np
 from scipy import sparse
-from sklearn.cluster import DBSCAN, KMeans
+from sklearn.cluster import KMeans
 
-from ..geometry.iterated_grassmann import BlowUpLevel
-from ..pointcloud.laplacian import (
-    pointcloud_laplacian,
-    lifted_pointcloud_laplacian,
-    laplacian_spectrum,
-)
+from ..solvers.eigen import laplacian_spectrum
 from ..solvers.linalg import normalize_vectors
 
 
-def spectral_embedding_from_laplacian(
+def spectral_embedding(
     L: sparse.spmatrix | np.ndarray,
-    *,
     n_components: int,
-    drop_first: bool = False,
-    which: Literal["SM", "LM"] = "SM",
+    *,
+    drop_first: bool = True,
     normalize_rows: bool = True,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """
-    Compute a spectral embedding from a Laplacian.
+    Laplacian eigenmap: the `n_components` smallest non-trivial eigenvectors of L.
+
+    Args:
+        L:              Graph Laplacian (sparse or dense, square).
+        n_components:   Number of eigenvector coordinates to return.
+        drop_first:     Drop the trivial constant eigenvector (eigenvalue ~ 0),
+                        standard for connected graphs. Default True.
+        normalize_rows: Unit-normalize each row of the embedding (Ng-Jordan-Weiss
+                        preprocessing for k-means). Default True.
 
     Returns:
-        evals, evecs, embedding
+        (evals, embedding) -- eigenvalues (n_components,) and embedding
+        (N, n_components). Eigenvectors are ordered by ascending eigenvalue.
     """
     if n_components <= 0:
-        raise ValueError("n_components must be positive.")
+        raise ValueError(f"n_components must be positive, got {n_components}.")
 
+    # laplacian_spectrum handles the drop_first offset internally (it fetches
+    # k+1 eigenpairs and drops the trivial one), so we pass n_components directly.
     evals, evecs = laplacian_spectrum(
-        L,
-        k=n_components,
-        which=which,
-        drop_first=drop_first,
-        return_eigenvalues=True,
+        L, k=n_components, which="SM", drop_first=drop_first, return_eigenvalues=True,
     )
 
-    embedding = evecs
-    if normalize_rows:
-        embedding = normalize_vectors(embedding)
-
-    return evals, evecs, embedding
+    embedding = normalize_vectors(evecs) if normalize_rows else evecs
+    return evals, embedding
 
 
-def spectral_clustering_from_laplacian(
+def spectral_clustering(
     L: sparse.spmatrix | np.ndarray,
     n_clusters: int,
     *,
-    drop_first: bool = False,
-    which: Literal["SM", "LM"] = "SM",
-    normalize_rows: bool = True,
-    cluster_method: Literal["kmeans", "dbscan"] = "kmeans",
-    random_state: Optional[int] = None,
+    n_components: int | None = None,
+    random_state: int | None = 0,
     n_init: int = 10,
-    max_iter: int = 300,
-    dbscan_eps: float = 0.5,
-    dbscan_min_samples: int = 5,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> np.ndarray:
     """
-    Run k-means or DBSCAN on the spectral embedding of a Laplacian.
+    Spectral clustering: eigenmap embedding + k-means.
 
-    n_clusters controls the embedding dimension for all clustering methods.
+    Args:
+        L:            Graph Laplacian.
+        n_clusters:   Number of clusters.
+        n_components: Embedding dimension. Defaults to `n_clusters`.
+        random_state: k-means seed.
+        n_init:       k-means restarts.
 
     Returns:
-        labels, evals, evecs, embedding
+        Integer labels of shape (N,).
     """
     if n_clusters <= 0:
-        raise ValueError("n_clusters must be positive.")
+        raise ValueError(f"n_clusters must be positive, got {n_clusters}.")
 
-    evals, evecs, embedding = spectral_embedding_from_laplacian(
-        L,
-        n_components=n_clusters,
-        drop_first=drop_first,
-        which=which,
-        normalize_rows=normalize_rows,
-    )
-
-    if cluster_method == "kmeans":
-        kmeans = KMeans(
-            n_clusters=n_clusters,
-            random_state=random_state,
-            n_init=n_init,
-            max_iter=max_iter,
-        )
-        labels = kmeans.fit_predict(embedding)
-    elif cluster_method == "dbscan":
-        if dbscan_eps <= 0.0:
-            raise ValueError("dbscan_eps must be positive.")
-        if dbscan_min_samples <= 0:
-            raise ValueError("dbscan_min_samples must be positive.")
-        dbscan = DBSCAN(
-            eps=float(dbscan_eps),
-            min_samples=int(dbscan_min_samples),
-        )
-        labels = dbscan.fit_predict(embedding)
-    else:
-        raise ValueError(
-            f"Unknown cluster_method '{cluster_method}'. Expected 'kmeans' or 'dbscan'."
-        )
-    return labels, evals, evecs, embedding
+    dim = n_components if n_components is not None else n_clusters
+    _, embedding = spectral_embedding(L, n_components=dim, drop_first=True)
+    return KMeans(
+        n_clusters=n_clusters, n_init=n_init, random_state=random_state,
+    ).fit_predict(embedding)
 
 
-def spectral_clustering_pointcloud(
-    points: np.ndarray,
-    n_clusters: int,
-    *,
-    k: int | None = 20,
-    radius: float | None = None,
-    h: float | Literal["local"] | None = "local",
-    laplacian_normalized: bool = True,
-    symmetrize: bool = True,
-    include_self: bool = False,
-    drop_first: bool = False,
-    which: Literal["SM", "LM"] = "SM",
-    normalize_rows: bool = True,
-    cluster_method: Literal["kmeans", "dbscan"] = "kmeans",
-    random_state: Optional[int] = None,
-    n_init: int = 10,
-    max_iter: int = 300,
-    dbscan_eps: float = 0.5,
-    dbscan_min_samples: int = 5,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Spectral clustering on a Euclidean point cloud.
-
-    cluster_method selects k-means or DBSCAN for clustering the embedding.
-    """
-    L = pointcloud_laplacian(
-        points,
-        k=k,
-        radius=radius,
-        h=h,
-        normalized=laplacian_normalized,
-        symmetrize=symmetrize,
-        include_self=include_self,
-    )
-
-    return spectral_clustering_from_laplacian(
-        L,
-        n_clusters,
-        drop_first=drop_first,
-        which=which,
-        normalize_rows=normalize_rows,
-        cluster_method=cluster_method,
-        random_state=random_state,
-        n_init=n_init,
-        max_iter=max_iter,
-        dbscan_eps=dbscan_eps,
-        dbscan_min_samples=dbscan_min_samples,
-    )
-
-
-def _coerce_blown_up(
-    points_or_sample: np.ndarray | BlowUpLevel,
-    subspace_basis: np.ndarray | None,
-) -> BlowUpLevel:
-    if isinstance(points_or_sample, BlowUpLevel):
-        if subspace_basis is not None:
-            raise ValueError("subspace_basis must be None when passing BlowUpLevel.")
-        return points_or_sample
-    if subspace_basis is None:
-        raise ValueError("subspace_basis is required when passing raw points.")
-    return BlowUpLevel.from_point_tangents(points_or_sample, subspace_basis)
-
-
-def spectral_clustering_lifted(
-    points_or_sample: np.ndarray | BlowUpLevel,
-    subspace_basis: np.ndarray | None,
-    n_clusters: int,
-    *,
-    k: int | None = 20,
-    radius: float | None = None,
-    h: float | Literal["local"] | None = "local",
-    alpha: float = 1.0,
-    subspace_metric: Literal["chordal", "geodesic"] = "chordal",
-    laplacian_normalized: bool = True,
-    symmetrize: bool = True,
-    include_self: bool = False,
-    drop_first: bool = False,
-    which: Literal["SM", "LM"] = "SM",
-    normalize_rows: bool = True,
-    cluster_method: Literal["kmeans", "dbscan"] = "kmeans",
-    random_state: Optional[int] = None,
-    n_init: int = 10,
-    max_iter: int = 300,
-    dbscan_eps: float = 0.5,
-    dbscan_min_samples: int = 5,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Spectral clustering on lifted points in R^n x G(k, n).
-
-    cluster_method selects k-means or DBSCAN for clustering the embedding.
-    """
-    sample = _coerce_blown_up(points_or_sample, subspace_basis)
-    L = lifted_pointcloud_laplacian(
-        sample,
-        k=k,
-        radius=radius,
-        h=h,
-        alpha=alpha,
-        subspace_metric=subspace_metric,
-        normalized=laplacian_normalized,
-        symmetrize=symmetrize,
-        include_self=include_self,
-    )
-
-    return spectral_clustering_from_laplacian(
-        L,
-        n_clusters,
-        drop_first=drop_first,
-        which=which,
-        normalize_rows=normalize_rows,
-        cluster_method=cluster_method,
-        random_state=random_state,
-        n_init=n_init,
-        max_iter=max_iter,
-        dbscan_eps=dbscan_eps,
-        dbscan_min_samples=dbscan_min_samples,
-    )
-
-
-__all__ = [
-    "spectral_embedding_from_laplacian",
-    "spectral_clustering_from_laplacian",
-    "spectral_clustering_pointcloud",
-    "spectral_clustering_lifted",
-]
+__all__ = ["spectral_embedding", "spectral_clustering"]

@@ -29,6 +29,54 @@ from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel, extract_lev
 from tangent_blowups.geometry.weight_config import WeightConfig
 from tangent_blowups.io.load import load_pointcloud
 from tangent_blowups.solvers.linalg import normalize_vectors
+from tangent_blowups.testsupport import examples_3D as _ex3d
+
+
+# =====================================================================
+# Non-orientable surface registry (mirrors alpha_ablation.py)
+# =====================================================================
+_PI = float(np.pi)
+_EPS = 1e-3
+NON_ORIENTABLE_SURFACES = {
+    "mobius_band_1":        (_ex3d.mobius_band_1,        (-1.0, 1.0),        (0.0, 2 * _PI)),
+    "mobius_band_3":        (_ex3d.mobius_band_3,        (-1.0, 1.0),        (0.0, 2 * _PI)),
+    "steiner_crosscap":     (_ex3d.steiner_crosscap,     (0.0, 2 * _PI),     (0.0, _PI / 2)),
+    "steiner_crosscap_cut": (_ex3d.steiner_crosscap_cut, (0.0, _PI),         (0.0, _PI / 2)),
+    "steiner_roman":        (_ex3d.steiner_roman,        (0.0, _PI),         (0.0, _PI)),
+    "busser_decic":         (_ex3d.busser_decic,         (0.0, 2 * _PI),     (-_PI / 2, _PI / 2)),
+    "boy_surface":          (_ex3d.boy_surface,          (0.0, 2 * _PI),     (0.0, _PI)),
+    "boy_surface_5":        (_ex3d.boy_surface_5,        (0.0, 2 * _PI),     (0.0, _PI)),
+    "etruscan_venus":       (_ex3d.etruscan_venus,       (_EPS, 2 * _PI - _EPS), (_EPS, 2 * _PI - _EPS)),
+    "jeener_bonan":         (_ex3d.jeener_bonan,         (0.0, 2 * _PI),     (0.0, 2 * _PI)),
+    "jeener_bonan_2cc":     (_ex3d.jeener_bonan_2cc,     (0.0, 2 * _PI),     (0.0, 2 * _PI)),
+    "busser_nonorientable": (_ex3d.busser_nonorientable, (0.0, 2 * _PI),     (-_PI / 2, _PI / 2)),
+    "petit_russian_hat":    (_ex3d.petit_russian_hat,    (0.0, 2 * _PI),     (0.0, _PI)),
+    "petit_russian_hat_cut":(_ex3d.petit_russian_hat_cut,(_PI, 2 * _PI),     (0.0, _PI)),
+    "banchoff_klein":       (_ex3d.banchoff_klein,       (0.0, 2 * _PI),     (0.0, 2 * _PI)),
+    "banchoff_klein_3":     (_ex3d.banchoff_klein_3,     (0.0, 2 * _PI),     (0.0, 2 * _PI)),
+}
+
+
+def _sample_surface(name: str, nu: int, nv: int) -> tuple[np.ndarray, np.ndarray]:
+    """Sample a non-orientable surface on a uniform grid. Returns (points, normals)."""
+    if name not in NON_ORIENTABLE_SURFACES:
+        raise ValueError(
+            f"Unknown surface '{name}'. Available: {', '.join(NON_ORIENTABLE_SURFACES)}"
+        )
+    factory, (u_lo, u_hi), (v_lo, v_hi) = NON_ORIENTABLE_SURFACES[name]
+    surf = factory()
+    u = np.linspace(u_lo, u_hi, nu)
+    v = np.linspace(v_lo, v_hi, nv)
+    U, V = np.meshgrid(u, v, indexing="ij")
+    s = surf.evaluate(U, V, with_tangents=False, with_normals=True)
+    pts = np.asarray(s.points, dtype=float).reshape(-1, 3)
+    nrm = np.asarray(s.normals, dtype=float).reshape(-1, 3)
+    valid = np.isfinite(pts).all(axis=1) & np.isfinite(nrm).all(axis=1) & (
+        np.linalg.norm(nrm, axis=1) > 1e-8
+    )
+    if not np.all(valid):
+        print(f"Dropping {int(np.sum(~valid))} degenerate samples from {name}.")
+    return pts[valid], normalize_vectors(nrm[valid])
 
 
 # =====================================================================
@@ -39,20 +87,13 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-_POINTCLOUD_DIRS = ["thingi10k_pointcloud", "threedscans_pointcloud"]
-
-
-def _pointcloud_dirs() -> list[Path]:
-    root = _repo_root() / "data"
-    return [root / d for d in _POINTCLOUD_DIRS if (root / d).is_dir()]
-
-
 def _available() -> dict[str, Path]:
-    """Return {stem: path} for all available point clouds across datasets."""
+    """Return {stem: path} for all .npz point clouds under data/ (recursive)."""
     result: dict[str, Path] = {}
-    for d in _pointcloud_dirs():
-        for p in d.glob("*.npz"):
-            result[p.stem] = p
+    root = _repo_root() / "data"
+    if root.is_dir():
+        for p in root.rglob("*.npz"):
+            result.setdefault(p.stem, p)
     return dict(sorted(result.items()))
 
 
@@ -291,14 +332,18 @@ def _show_quantity(qname, panel_names, panel_data, *, per_method=False):
 def run(
     name: str,
     *,
+    pts: np.ndarray | None = None,
+    normals: np.ndarray | None = None,
     k_bu: int = 50,
     n_max: int | None = None,
     rotate: np.ndarray | None = None,
     weight_config: WeightConfig | None = None,
 ):
+    """Curvature comparison. Loads from `name` unless `pts`/`normals` are given."""
     print(f"\n=== {name} ===")
 
-    pts, normals = _load_points_and_normals(name)
+    if pts is None or normals is None:
+        pts, normals = _load_points_and_normals(name)
     if rotate is not None:
         pts = pts @ rotate.T
         normals = normals @ rotate.T
@@ -400,6 +445,16 @@ def main():
         "-p", "--pointcloud", type=str, default=None,
         help="Name or path of the point cloud (.npz). Omit to list available.",
     )
+    parser.add_argument(
+        "-s", "--surface", type=str, default=None,
+        choices=sorted(NON_ORIENTABLE_SURFACES.keys()),
+        help="Sample a non-orientable surface instead of loading a .npz point cloud. "
+             "Mutually exclusive with --pointcloud.",
+    )
+    parser.add_argument("--surface-nu", type=int, default=300,
+                        help="Grid resolution along u for --surface (default 300).")
+    parser.add_argument("--surface-nv", type=int, default=300,
+                        help="Grid resolution along v for --surface (default 300).")
     parser.add_argument("--k-bu", type=int, default=20, help="k-NN for blow-up")
     parser.add_argument("--weights", type=str, default="uniform",
                         choices=["uniform", "product"],
@@ -414,16 +469,32 @@ def main():
                         help="Rotate point cloud: 'x', 'y', or 'angle,ax,ay,az'")
     args = parser.parse_args()
 
-    if args.pointcloud is None:
+    if args.pointcloud is not None and args.surface is not None:
+        parser.error("--pointcloud and --surface are mutually exclusive.")
+
+    if args.pointcloud is None and args.surface is None:
         avail = _available()
-        if not avail:
-            print("No point clouds found. Run mesh_to_pc.py first.")
-            return
         print("Available point clouds:")
-        for name, path in avail.items():
-            dataset = path.parent.name
-            print(f"  {name}  ({dataset})")
+        if avail:
+            for name, path in avail.items():
+                print(f"  {name}  ({path.parent.name})")
+        else:
+            print("  (none)")
+        print("Available non-orientable surfaces (--surface NAME):")
+        for name in sorted(NON_ORIENTABLE_SURFACES):
+            print(f"  {name}")
         return
+
+    if args.surface is not None:
+        display_name = args.surface
+        pts_in, normals_in = _sample_surface(
+            args.surface, args.surface_nu, args.surface_nv,
+        )
+        print(f"Sampled {len(pts_in)} points from surface '{args.surface}' "
+              f"({args.surface_nu}x{args.surface_nv} grid)")
+    else:
+        display_name = args.pointcloud
+        pts_in = normals_in = None   # run() will load from the name
 
     ps.init()
     ps.set_ground_plane_mode("shadow_only")
@@ -432,7 +503,7 @@ def main():
     R = _parse_rotation(args.rotate) if args.rotate else None
     wc = WeightConfig(kernel=args.weights, sigma_x=args.sigma_x, sigma_u=args.sigma_u)
     method_names, panel_names, panel_data, normals, pts = run(
-        args.pointcloud, k_bu=args.k_bu,
+        display_name, pts=pts_in, normals=normals_in, k_bu=args.k_bu,
         n_max=args.n_max, rotate=R, weight_config=wc)
 
     # Show K initially
@@ -446,7 +517,7 @@ def main():
 
     def callback():
         psim.TextUnformatted(
-            f"{args.pointcloud}  |  Panels: {' | '.join(method_names)}")
+            f"{display_name}  |  Panels: {' | '.join(method_names)}")
         psim.Separator()
 
         changed_q, new_q = psim.Combo("Quantity", state["quantity"], QUANTITIES)
@@ -469,14 +540,14 @@ def main():
 
         psim.Separator()
         if psim.Button("Export colour bar"):
-            _export_colourbar(args.pointcloud, panel_names, panel_data, state)
+            _export_colourbar(display_name, panel_names, panel_data, state)
 
         if psim.Button("Export PLY"):
-            _export_ply(args.pointcloud, pts, normals,
+            _export_ply(display_name, pts, normals,
                         panel_names, panel_data, state)
 
         if psim.Button("Screenshot"):
-            fname = f"curvature_{args.pointcloud}.png"
+            fname = f"curvature_{display_name}.png"
             ps.screenshot(fname, transparent_bg=False)
             print(f"Saved {fname}")
 

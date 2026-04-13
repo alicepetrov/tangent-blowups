@@ -27,7 +27,8 @@ from scipy import sparse
 from tangent_blowups.testsupport import RandomSurface, plane_paraboloid_tangent, sample
 from tangent_blowups.geometry.iterated_grassmann import iterated_blowup
 from tangent_blowups.geometry.kernels import product_affinity, affinity_to_laplacian
-from tangent_blowups.pointcloud import bilateral_pointcloud_laplacian, laplacian_spectrum
+from tangent_blowups.pointcloud import bilateral_pointcloud_laplacian
+from tangent_blowups.solvers.eigen import laplacian_spectrum
 
 # ---------------------------------------------------------------------------
 # Parameters

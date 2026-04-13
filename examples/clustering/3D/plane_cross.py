@@ -22,10 +22,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 
-from tangent_blowups.clustering import (
-    spectral_clustering_pointcloud,
-    spectral_clustering_from_laplacian,
-)
+from sklearn.cluster import KMeans
+from tangent_blowups.clustering import spectral_embedding
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.geometry.kernels import lifted_laplacian
 from tangent_blowups.pointcloud import estimate_normals_pca
@@ -179,11 +177,12 @@ def _lifted_clustering(
     l0 = BlowUpLevel.from_point_tangents(points, frames)
     l1 = l0.lift(k=k_blowup, alpha=alpha, lam=lam)
     L, _, _ = lifted_laplacian(
-        l1, kernel="self_tuning", k=k_kernel, h="local", normalized=normalized,
+        l1, kernel="product", self_tuning=True, k=k_kernel, normalized=normalized,
     )
-    labels, evals, _, _ = spectral_clustering_from_laplacian(
-        L, n_clusters, random_state=random_state,
-    )
+    evals, emb = spectral_embedding(L, n_components=n_clusters)
+    labels = KMeans(
+        n_clusters=n_clusters, n_init=10, random_state=random_state,
+    ).fit_predict(emb)
     return labels, evals
 
 
@@ -212,15 +211,18 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Euclidean spectral clustering (self-tuning on position only)
     # ------------------------------------------------------------------
-    print("Running Euclidean spectral clustering...")
-    labels_euc, evals_euc, _, _ = spectral_clustering_pointcloud(
-        points,
-        n_clusters=n_clusters,
-        k=k_kernel,
-        h="local",
-        laplacian_normalized=normalized,
-        random_state=random_state,
+    print("Running Euclidean spectral clustering (alpha=0 lift, pure spatial)...")
+    frames_euc = _normals_to_tangent_frames(normals)
+    l_euc = BlowUpLevel.from_point_tangents(points, frames_euc).lift(
+        k=k_blowup, alpha=0.0, lam=lam,
     )
+    L_euc, _, _ = lifted_laplacian(
+        l_euc, kernel="product", self_tuning=True, k=k_kernel, normalized=normalized,
+    )
+    evals_euc, emb_euc = spectral_embedding(L_euc, n_components=n_clusters)
+    labels_euc = KMeans(
+        n_clusters=n_clusters, n_init=10, random_state=random_state,
+    ).fit_predict(emb_euc)
     _print_cluster_sizes("Euclidean", labels_euc)
 
     # ------------------------------------------------------------------
