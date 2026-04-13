@@ -162,6 +162,12 @@ def estimate_product_bandwidths(
     # One angular bandwidth per embedded projector block (one per lift)
     sigmas_u: list[float] = []
     for _m, (start, ncols, scale) in enumerate(level._proj_blocks):
+        # alpha=0 lift: the angular factor is skipped in product_affinity,
+        # so sigma_u is unused.  Emit a placeholder to keep the list length
+        # equal to the number of lifts.
+        if scale == 0.0:
+            sigmas_u.append(1.0)
+            continue
         diff = (level.embedded[rows, start:start + ncols]
                 - level.embedded[cols, start:start + ncols])
         raw_dist = np.sqrt(np.einsum("ij,ij->i", diff, diff))
@@ -424,15 +430,23 @@ def product_affinity(
     _BLOCK_CHUNK = 32
     E = rows.shape[0]
     for m, (start, ncols, scale) in enumerate(level._proj_blocks):
+        # alpha=0 lift -> scale=0 -> the projector block is identically zero
+        # and the angular factor reduces to exp(0)=1.  Skip to avoid 0/0.
+        if scale == 0.0:
+            continue
         scaled_dist2 = np.zeros(E, dtype=float)
         for c0 in range(0, ncols, _BLOCK_CHUNK):
             c1 = min(c0 + _BLOCK_CHUNK, ncols)
             diff = (level.embedded[rows, start + c0:start + c1]
                     - level.embedded[cols, start + c0:start + c1])
             scaled_dist2 += np.einsum("ij,ij->i", diff, diff)
-        # scaled_dist2 = scale^2 * ||P^(m)_i - P^(m)_j||_F^2
-        denom = scale * scale * sigmas[m] * sigmas[m]
-        weights *= np.exp(-scaled_dist2 / denom)
+        # scaled_dist2 = scale^2 * ||P^(m)_i - P^(m)_j||_F^2 = (alpha/2)*||P_diff||^2.
+        # sigma_u is an intrinsic bandwidth on ||P_diff|| (see
+        # estimate_product_bandwidths, which divides the raw embedded distance
+        # by `scale`), so the denominator is sigma_u^2 -- NOT scale^2*sigma_u^2.
+        # Keeping the scale^2 here would exactly cancel the scale^2 baked into
+        # `scaled_dist2`, making alpha a no-op on the angular factor.
+        weights *= np.exp(-scaled_dist2 / (sigmas[m] * sigmas[m]))
 
     return _assemble_affinity(N, rows, cols, weights, symmetrize=symmetrize)
 

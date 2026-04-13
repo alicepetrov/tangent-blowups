@@ -10,6 +10,20 @@ import numpy as np
 from .geom_types import ParametricCurve, ParametricSurface
 from ..solvers.linalg import normalize_vectors
 
+
+def _surface_frame(du: np.ndarray, dv: np.ndarray) -> np.ndarray:
+    """Gram-Schmidt an orthonormal tangent frame (..., 3, 2) from raw du, dv."""
+    e1 = normalize_vectors(du)
+    dv_perp = dv - np.sum(dv * e1, axis=-1, keepdims=True) * e1
+    e2 = normalize_vectors(dv_perp)
+    return np.stack([e1, e2], axis=-1)
+
+
+def _surface_normal(du: np.ndarray, dv: np.ndarray) -> np.ndarray:
+    """Unit normal (..., 3) from raw du, dv via cross product."""
+    return normalize_vectors(np.cross(du, dv))
+
+
 # -----------------------------------------------------------------------------
 # Space Curves (3D)
 # -----------------------------------------------------------------------------
@@ -111,6 +125,45 @@ def trefoil_knot(scale: float = 1.0, z_scale: float = 1.0) -> ParametricCurve:
                 scale * (np.cos(t) + 4.0 * np.cos(2.0 * t)),
                 scale * (-np.sin(t) + 4.0 * np.sin(2.0 * t)),
                 z_scale * (-3.0 * np.cos(3.0 * t)),
+            ],
+            axis=-1,
+        )
+        return normalize_vectors(d)
+
+    return ParametricCurve(position=pos, tangent=tan, normal=None)
+
+
+def mobius_border_trefoil(R: float = 3.0) -> ParametricCurve:
+    """
+    Boundary curve of the 3-half-turn Mobius band — a trefoil knot in R^3.
+
+    Parametrization (t in [0, 4*pi]):
+        x = (R + cos(3t/2)) * cos(t)
+        y = (R + cos(3t/2)) * sin(t)
+        z = sin(3t/2)
+    """
+
+    def pos(t: np.ndarray) -> np.ndarray:
+        t = np.asarray(t, dtype=float)
+        a = R + np.cos(1.5 * t)
+        return np.stack(
+            [
+                a * np.cos(t),
+                a * np.sin(t),
+                np.sin(1.5 * t),
+            ],
+            axis=-1,
+        )
+
+    def tan(t: np.ndarray) -> np.ndarray:
+        t = np.asarray(t, dtype=float)
+        a = R + np.cos(1.5 * t)
+        a_prime = -1.5 * np.sin(1.5 * t)
+        d = np.stack(
+            [
+                a_prime * np.cos(t) - a * np.sin(t),
+                a_prime * np.sin(t) + a * np.cos(t),
+                1.5 * np.cos(1.5 * t),
             ],
             axis=-1,
         )
@@ -1465,9 +1518,692 @@ def tetrahedron_surface(scale: float = 1.0) -> ParametricSurface:
     return ParametricSurface(position=pos, tangent=tan, normal=norm)
 
 
+# -----------------------------------------------------------------------------
+# Non-Orientable Surfaces
+# -----------------------------------------------------------------------------
+# Parametrizations adapted from the EuMaT "Non-Orientable Surfaces" reference
+# (https://eumat.sourceforge.net/Programs/Examples/Non-Orientable%20Surfaces.html).
+# Each factory returns a ParametricSurface with analytic first derivatives.
+# Natural (u, v) domains are documented per surface; the caller chooses the
+# sampling domain via the sampling strategy (consistent with klein_bottle/torus).
+
+
+def _mobius_band(R: float, k: int) -> ParametricSurface:
+    """Shared implementation for the k-half-turn Mobius band."""
+    half_k = 0.5 * k
+
+    def raw(u, v):
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        chv = np.cos(half_k * v)
+        shv = np.sin(half_k * v)
+        cv = np.cos(v)
+        sv = np.sin(v)
+        a = R + u * chv
+        p = np.stack([a * cv, a * sv, u * shv], axis=-1)
+        du = np.stack([chv * cv, chv * sv, shv], axis=-1)
+        a_v = -half_k * u * shv
+        dv_ = np.stack(
+            [a_v * cv - a * sv, a_v * sv + a * cv, half_k * u * chv],
+            axis=-1,
+        )
+        return p, du, dv_
+
+    def pos(u, v):
+        return raw(u, v)[0]
+
+    def tan(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_frame(du, dv_)
+
+    def norm(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_normal(du, dv_)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
+def mobius_band_1(R: float = 3.0) -> ParametricSurface:
+    """
+    Mobius band with 1 half-turn (classical Mobius strip).
+
+    Parametrization (u in [-1, 1], v in [0, 2*pi]):
+        x = (R + u*cos(v/2)) * cos(v)
+        y = (R + u*cos(v/2)) * sin(v)
+        z = u * sin(v/2)
+    """
+    return _mobius_band(R, 1)
+
+
+def mobius_band_3(R: float = 3.0) -> ParametricSurface:
+    """
+    Mobius band with 3 half-turns (trefoil-boundary Mobius band).
+
+    Parametrization (u in [-1, 1], v in [0, 2*pi]):
+        x = (R + u*cos(3v/2)) * cos(v)
+        y = (R + u*cos(3v/2)) * sin(v)
+        z = u * sin(3v/2)
+    """
+    return _mobius_band(R, 3)
+
+
+def steiner_crosscap() -> ParametricSurface:
+    """
+    Steiner crosscap (real projective plane immersion, full domain).
+
+    Parametrization (u in [0, 2*pi], v in [0, pi/2]):
+        x = 0.5 * cos(u) * sin(2v)
+        y = 0.5 * sin(u) * sin(2v)
+        z = 0.5 * (cos(v)^2 - sin(v)^2 * cos(u)^2)
+    """
+
+    def raw(u, v):
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        cu, su = np.cos(u), np.sin(u)
+        cv, sv = np.cos(v), np.sin(v)
+        s2v, c2v = np.sin(2.0 * v), np.cos(2.0 * v)
+        x = 0.5 * cu * s2v
+        y = 0.5 * su * s2v
+        z = 0.5 * (cv * cv - sv * sv * cu * cu)
+        p = np.stack([x, y, z], axis=-1)
+        du = np.stack(
+            [
+                -0.5 * su * s2v,
+                0.5 * cu * s2v,
+                sv * sv * cu * su,
+            ],
+            axis=-1,
+        )
+        dv_ = np.stack(
+            [
+                cu * c2v,
+                su * c2v,
+                -0.5 * s2v * (1.0 + cu * cu),
+            ],
+            axis=-1,
+        )
+        return p, du, dv_
+
+    def pos(u, v):
+        return raw(u, v)[0]
+
+    def tan(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_frame(du, dv_)
+
+    def norm(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_normal(du, dv_)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
+def steiner_crosscap_cut() -> ParametricSurface:
+    """
+    Steiner crosscap with half-u domain that exposes the self-intersection curve.
+
+    Same parametrization as `steiner_crosscap`; natural domain
+    (u in [0, pi], v in [0, pi/2]).
+    """
+    return steiner_crosscap()
+
+
+def steiner_roman() -> ParametricSurface:
+    """
+    Steiner Roman surface.
+
+    Parametrization (u in [0, pi], v in [0, pi]):
+        x = 0.5 * sin(2u) * sin(v)^2
+        y = 0.5 * sin(u) * sin(2v)
+        z = 0.5 * cos(u) * sin(2v)
+    """
+
+    def raw(u, v):
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        cu, su = np.cos(u), np.sin(u)
+        c2u, s2u = np.cos(2.0 * u), np.sin(2.0 * u)
+        cv, sv = np.cos(v), np.sin(v)
+        c2v, s2v = np.cos(2.0 * v), np.sin(2.0 * v)
+        p = np.stack(
+            [
+                0.5 * s2u * sv * sv,
+                0.5 * su * s2v,
+                0.5 * cu * s2v,
+            ],
+            axis=-1,
+        )
+        du = np.stack(
+            [
+                c2u * sv * sv,
+                0.5 * cu * s2v,
+                -0.5 * su * s2v,
+            ],
+            axis=-1,
+        )
+        dv_ = np.stack(
+            [
+                0.5 * s2u * s2v,
+                su * c2v,
+                cu * c2v,
+            ],
+            axis=-1,
+        )
+        return p, du, dv_
+
+    def pos(u, v):
+        return raw(u, v)[0]
+
+    def tan(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_frame(du, dv_)
+
+    def norm(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_normal(du, dv_)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
+def busser_decic() -> ParametricSurface:
+    """
+    Busser decic surface (projective-plane variant).
+
+    Parametrization (u in [0, 2*pi], v in [-pi/2, pi/2]):
+        x = cos(u) * cos(v)
+        y = sin(u) * cos(v)
+        z = sin(2v) * cos(3u/2)
+    """
+
+    def raw(u, v):
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        cu, su = np.cos(u), np.sin(u)
+        cv, sv = np.cos(v), np.sin(v)
+        s2v, c2v = np.sin(2.0 * v), np.cos(2.0 * v)
+        c3u2 = np.cos(1.5 * u)
+        s3u2 = np.sin(1.5 * u)
+        p = np.stack([cu * cv, su * cv, s2v * c3u2], axis=-1)
+        du = np.stack(
+            [
+                -su * cv,
+                cu * cv,
+                -1.5 * s2v * s3u2,
+            ],
+            axis=-1,
+        )
+        dv_ = np.stack(
+            [
+                -cu * sv,
+                -su * sv,
+                2.0 * c2v * c3u2,
+            ],
+            axis=-1,
+        )
+        return p, du, dv_
+
+    def pos(u, v):
+        return raw(u, v)[0]
+
+    def tan(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_frame(du, dv_)
+
+    def norm(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_normal(du, dv_)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
+def boy_surface(
+    m: int = 3,
+    c0: float = 2.0,
+    c1: float = 0.5,
+    c2: float = 0.5,
+    r: float = 4.0,
+) -> ParametricSurface:
+    """
+    Boy surface — immersion of RP^2 in R^3.
+
+    Parametrization (u in [0, 2*pi], v in [0, pi]):
+        a     = c0 + c1*sin(2m*v - pi/3) + c2*sin(m*v - pi/6)
+        b     = c0 + c1*sin(2m*v - pi/3) - c2*sin(m*v - pi/6)
+        alpha = (pi/8) * sin(m*v)
+        x1    = (a^2 - b^2)/sqrt(a^2+b^2) + a*cos(u) - b*sin(u)
+        z1    = sqrt(a^2+b^2) + a*cos(u) + b*sin(u)
+        X = r*(x1*cos(v) - z1*sin(alpha)*sin(v))
+        Y = r*(x1*sin(v) + z1*sin(alpha)*cos(v))
+        Z = r* z1*cos(alpha)
+    """
+
+    def raw(u, v):
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        cu, su = np.cos(u), np.sin(u)
+        cv, sv = np.cos(v), np.sin(v)
+
+        phi1 = 2.0 * m * v - np.pi / 3.0
+        phi2 = m * v - np.pi / 6.0
+        s_phi1, c_phi1 = np.sin(phi1), np.cos(phi1)
+        s_phi2, c_phi2 = np.sin(phi2), np.cos(phi2)
+
+        common = c0 + c1 * s_phi1
+        a = common + c2 * s_phi2
+        b = common - c2 * s_phi2
+
+        a_v = 2.0 * m * c1 * c_phi1 + m * c2 * c_phi2
+        b_v = 2.0 * m * c1 * c_phi1 - m * c2 * c_phi2
+
+        s2 = a * a + b * b
+        s = np.sqrt(s2)
+        diff = a * a - b * b
+
+        x1 = diff / s + a * cu - b * su
+        z1 = s + a * cu + b * su
+
+        aa_v = a * a_v
+        bb_v = b * b_v
+        s_v = (aa_v + bb_v) / s
+        diff_v = 2.0 * (aa_v - bb_v)
+        quot_v = diff_v / s - diff * s_v / s2
+
+        x1_v = quot_v + a_v * cu - b_v * su
+        z1_v = s_v + a_v * cu + b_v * su
+
+        x1_u = -a * su - b * cu
+        z1_u = -a * su + b * cu
+
+        alpha = (np.pi / 8.0) * np.sin(m * v)
+        alpha_v = (m * np.pi / 8.0) * np.cos(m * v)
+        sa = np.sin(alpha)
+        ca = np.cos(alpha)
+
+        X = r * (x1 * cv - z1 * sa * sv)
+        Y = r * (x1 * sv + z1 * sa * cv)
+        Z = r * z1 * ca
+        p = np.stack([X, Y, Z], axis=-1)
+
+        X_u = r * (x1_u * cv - z1_u * sa * sv)
+        Y_u = r * (x1_u * sv + z1_u * sa * cv)
+        Z_u = r * z1_u * ca
+        du = np.stack([X_u, Y_u, Z_u], axis=-1)
+
+        X_v = r * (
+            x1_v * cv
+            - x1 * sv
+            - z1_v * sa * sv
+            - z1 * ca * alpha_v * sv
+            - z1 * sa * cv
+        )
+        Y_v = r * (
+            x1_v * sv
+            + x1 * cv
+            + z1_v * sa * cv
+            + z1 * ca * alpha_v * cv
+            - z1 * sa * sv
+        )
+        Z_v = r * (z1_v * ca - z1 * sa * alpha_v)
+        dv_ = np.stack([X_v, Y_v, Z_v], axis=-1)
+
+        return p, du, dv_
+
+    def pos(u, v):
+        return raw(u, v)[0]
+
+    def tan(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_frame(du, dv_)
+
+    def norm(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_normal(du, dv_)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
+def boy_surface_5(
+    c0: float = 2.0, c1: float = 0.5, c2: float = 0.5, r: float = 4.0
+) -> ParametricSurface:
+    """Boy-like surface with m=5 (5 half-turns). See `boy_surface`."""
+    return boy_surface(m=5, c0=c0, c1=c1, c2=c2, r=r)
+
+
+def etruscan_venus(
+    a: float = 4.0,
+    b: float = 2.0,
+    c: float = 2.0,
+    e: float = 3.0,
+    g: float = 12.0,
+) -> ParametricSurface:
+    """
+    Etruscan Venus — a Klein-bottle-like immersion.
+
+    Parametrization (u, v in (~0, 2*pi)):
+        w   = b*sin(u) + e
+        dx  = a*(cos(u) - cos(c*u))
+        dy  = -g*sin(u)
+        rxy = sqrt(dx^2 + dy^2)
+        X = a*sin(u) - b*sin(c*u) - dy*w*cos(v)/rxy
+        Y = g*cos(u) + dx*w*cos(v)/rxy
+        Z = w*sin(v)
+
+    Note: rxy -> 0 at u = 0 — sample strictly away from the seam.
+    """
+
+    def raw(u, v):
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        cu, su = np.cos(u), np.sin(u)
+        ccu = np.cos(c * u)
+        scu = np.sin(c * u)
+        cv, sv = np.cos(v), np.sin(v)
+
+        w = b * su + e
+        dx = a * (cu - ccu)
+        dy = -g * su
+        rxy2 = dx * dx + dy * dy
+        rxy = np.sqrt(rxy2)
+
+        F = w * cv / rxy
+
+        X = a * su - b * scu - dy * F
+        Y = g * cu + dx * F
+        Z = w * sv
+        p = np.stack([X, Y, Z], axis=-1)
+
+        w_u = b * cu
+        dx_u = a * (-su + c * scu)
+        dy_u = -g * cu
+        rxy_u = (dx * dx_u + dy * dy_u) / rxy
+        F_u = cv * (w_u / rxy - w * rxy_u / rxy2)
+
+        X_u = a * cu - b * c * ccu - dy_u * F - dy * F_u
+        Y_u = -g * su + dx_u * F + dx * F_u
+        Z_u = w_u * sv
+        du = np.stack([X_u, Y_u, Z_u], axis=-1)
+
+        X_v = dy * w * sv / rxy
+        Y_v = -dx * w * sv / rxy
+        Z_v = w * cv
+        dv_ = np.stack([X_v, Y_v, Z_v], axis=-1)
+
+        return p, du, dv_
+
+    def pos(u, v):
+        return raw(u, v)[0]
+
+    def tan(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_frame(du, dv_)
+
+    def norm(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_normal(du, dv_)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
+def jeener_bonan(s: float = 2.0, t: float = 4.0) -> ParametricSurface:
+    """
+    Jeener-Bonan 3-neck Klein bottle.
+
+    Parametrization (u, v in [0, 2*pi]):
+        w = ((s+1)/4) * cos((s+1)u + pi/t) + sqrt(2)
+        X = s*cos(u) + cos(su) - w*sin(((s-1)/2)u)*cos(v)
+        Y = s*sin(u) - sin(su) - w*cos(((s-1)/2)u)*cos(v)
+        Z = w*sin(v)
+    """
+
+    def raw(u, v):
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        k1 = s + 1.0
+        k2 = 0.5 * (s - 1.0)
+        phase = k1 * u + np.pi / t
+        cphase = np.cos(phase)
+        sphase = np.sin(phase)
+
+        w = (k1 / 4.0) * cphase + np.sqrt(2.0)
+        w_u = -(k1 * k1 / 4.0) * sphase
+
+        cu, su = np.cos(u), np.sin(u)
+        csu, ssu = np.cos(s * u), np.sin(s * u)
+        c_k2u, s_k2u = np.cos(k2 * u), np.sin(k2 * u)
+        cv, sv = np.cos(v), np.sin(v)
+
+        X = s * cu + csu - w * s_k2u * cv
+        Y = s * su - ssu - w * c_k2u * cv
+        Z = w * sv
+        p = np.stack([X, Y, Z], axis=-1)
+
+        X_u = (
+            -s * su
+            - s * ssu
+            - (w_u * s_k2u + w * k2 * c_k2u) * cv
+        )
+        Y_u = (
+            s * cu
+            - s * csu
+            - (w_u * c_k2u - w * k2 * s_k2u) * cv
+        )
+        Z_u = w_u * sv
+        du = np.stack([X_u, Y_u, Z_u], axis=-1)
+
+        X_v = w * s_k2u * sv
+        Y_v = w * c_k2u * sv
+        Z_v = w * cv
+        dv_ = np.stack([X_v, Y_v, Z_v], axis=-1)
+
+        return p, du, dv_
+
+    def pos(u, v):
+        return raw(u, v)[0]
+
+    def tan(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_frame(du, dv_)
+
+    def norm(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_normal(du, dv_)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
+def jeener_bonan_2cc() -> ParametricSurface:
+    """Jeener-Bonan with s=0, t=2 — surface with 2 crosscaps."""
+    return jeener_bonan(s=0.0, t=2.0)
+
+
+def busser_nonorientable() -> ParametricSurface:
+    """
+    Busser non-orientable surface.
+
+    Parametrization (u in [0, 2*pi], v in [-pi/2, pi/2]):
+        x = 0.5 * cos(u) * cos(v)
+        y = 0.5 * sin(u) * cos(v)
+        z = 0.5 * sin(v) - cos(u)^2 * sin(v/2)^3
+    """
+
+    def raw(u, v):
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        cu, su = np.cos(u), np.sin(u)
+        cv, sv = np.cos(v), np.sin(v)
+        s2u = np.sin(2.0 * u)
+        svh = np.sin(0.5 * v)
+        cvh = np.cos(0.5 * v)
+        svh2 = svh * svh
+        svh3 = svh2 * svh
+
+        p = np.stack(
+            [
+                0.5 * cu * cv,
+                0.5 * su * cv,
+                0.5 * sv - cu * cu * svh3,
+            ],
+            axis=-1,
+        )
+        du = np.stack(
+            [
+                -0.5 * su * cv,
+                0.5 * cu * cv,
+                s2u * svh3,
+            ],
+            axis=-1,
+        )
+        dv_ = np.stack(
+            [
+                -0.5 * cu * sv,
+                -0.5 * su * sv,
+                0.5 * cv - 1.5 * cu * cu * svh2 * cvh,
+            ],
+            axis=-1,
+        )
+        return p, du, dv_
+
+    def pos(u, v):
+        return raw(u, v)[0]
+
+    def tan(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_frame(du, dv_)
+
+    def norm(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_normal(du, dv_)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
+def petit_russian_hat() -> ParametricSurface:
+    """
+    Petit Russian Hat.
+
+    Parametrization (u in [0, 2*pi], v in [0, pi]):
+        x = (1 + sin(v)) * cos(u)
+        y = 2 * sin(u) * sin(v)
+        z = sin(2v)
+    """
+
+    def raw(u, v):
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        cu, su = np.cos(u), np.sin(u)
+        cv, sv = np.cos(v), np.sin(v)
+        s2v, c2v = np.sin(2.0 * v), np.cos(2.0 * v)
+        zero = np.zeros_like(cu * cv)
+        p = np.stack(
+            [
+                (1.0 + sv) * cu,
+                2.0 * su * sv,
+                s2v + zero,
+            ],
+            axis=-1,
+        )
+        du = np.stack(
+            [
+                -(1.0 + sv) * su,
+                2.0 * cu * sv,
+                zero,
+            ],
+            axis=-1,
+        )
+        dv_ = np.stack(
+            [
+                cv * cu,
+                2.0 * su * cv,
+                2.0 * c2v + zero,
+            ],
+            axis=-1,
+        )
+        return p, du, dv_
+
+    def pos(u, v):
+        return raw(u, v)[0]
+
+    def tan(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_frame(du, dv_)
+
+    def norm(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_normal(du, dv_)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
+def petit_russian_hat_cut() -> ParametricSurface:
+    """Petit Russian Hat restricted to u in [pi, 2*pi]. See `petit_russian_hat`."""
+    return petit_russian_hat()
+
+
+def banchoff_klein(m: int = 1, a: float = 2.0, b: float = 1.0) -> ParametricSurface:
+    """
+    Banchoff Klein bottle immersion.
+
+    Parametrization (u, v in [0, 2*pi]):
+        T = a + b*cos(u)*cos(m*v/2) - (b/2)*sin(2u)*sin(m*v/2)
+        X = T * cos(v)
+        Y = T * sin(v)
+        Z = b*cos(u)*sin(m*v/2) + (b/2)*sin(2u)*cos(m*v/2)
+    """
+
+    def raw(u, v):
+        u = np.asarray(u, dtype=float)
+        v = np.asarray(v, dtype=float)
+        cu, su = np.cos(u), np.sin(u)
+        s2u, c2u = np.sin(2.0 * u), np.cos(2.0 * u)
+        mhv = 0.5 * m * v
+        cmh, smh = np.cos(mhv), np.sin(mhv)
+        cv, sv = np.cos(v), np.sin(v)
+
+        T = a + b * cu * cmh - 0.5 * b * s2u * smh
+        Z = b * cu * smh + 0.5 * b * s2u * cmh
+
+        p = np.stack([T * cv, T * sv, Z], axis=-1)
+
+        T_u = -b * su * cmh - b * c2u * smh
+        Z_u = -b * su * smh + b * c2u * cmh
+
+        X_u = T_u * cv
+        Y_u = T_u * sv
+        du = np.stack([X_u, Y_u, Z_u], axis=-1)
+
+        T_v = -0.5 * b * m * cu * smh - 0.25 * b * m * s2u * cmh
+        Z_v = 0.5 * b * m * cu * cmh - 0.25 * b * m * s2u * smh
+
+        X_v = T_v * cv - T * sv
+        Y_v = T_v * sv + T * cv
+        dv_ = np.stack([X_v, Y_v, Z_v], axis=-1)
+
+        return p, du, dv_
+
+    def pos(u, v):
+        return raw(u, v)[0]
+
+    def tan(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_frame(du, dv_)
+
+    def norm(u, v):
+        _, du, dv_ = raw(u, v)
+        return _surface_normal(du, dv_)
+
+    return ParametricSurface(position=pos, tangent=tan, normal=norm)
+
+
+def banchoff_klein_3(a: float = 2.0, b: float = 1.0) -> ParametricSurface:
+    """Banchoff Klein bottle with m=3 (3 half-turns). See `banchoff_klein`."""
+    return banchoff_klein(m=3, a=a, b=b)
+
+
 __all__ = [
     "helix",
     "trefoil_knot",
+    "mobius_border_trefoil",
     "space_lissajous",
     "figure8_space",
     "square_loop",
@@ -1484,4 +2220,20 @@ __all__ = [
     "tangent_spheres",
     "cube_surface",
     "tetrahedron_surface",
+    "mobius_band_1",
+    "mobius_band_3",
+    "steiner_crosscap",
+    "steiner_crosscap_cut",
+    "steiner_roman",
+    "busser_decic",
+    "boy_surface",
+    "boy_surface_5",
+    "etruscan_venus",
+    "jeener_bonan",
+    "jeener_bonan_2cc",
+    "busser_nonorientable",
+    "petit_russian_hat",
+    "petit_russian_hat_cut",
+    "banchoff_klein",
+    "banchoff_klein_3",
 ]

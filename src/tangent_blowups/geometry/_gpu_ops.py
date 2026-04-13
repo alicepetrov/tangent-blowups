@@ -184,10 +184,15 @@ def product_affinity_gpu(level, sigma_x, sigmas, k, rows_np, cols_np):
 
     # Angular factors: one per lift (from the product metric)
     for m, (start, ncols_, scale) in enumerate(level._proj_blocks):
+        # alpha=0 lift -> scale=0 -> projector block is zero, factor is 1.
+        if scale == 0.0:
+            continue
         diff = embedded[rows, start:start + ncols_] - embedded[cols, start:start + ncols_]
         scaled_dist2 = (diff * diff).sum(dim=1)
-        denom = scale * scale * sigmas[m] * sigmas[m]
-        weights = weights * torch.exp(-scaled_dist2 / denom)
+        # sigma_u is intrinsic (bandwidth on ||P_diff||_F); scaled_dist2 already
+        # carries the alpha/2 scale from the embedding. Denominator is sigma_u^2
+        # only -- see matching CPU path in kernels.product_affinity.
+        weights = weights * torch.exp(-scaled_dist2 / (sigmas[m] * sigmas[m]))
 
     return weights.cpu().numpy()
 

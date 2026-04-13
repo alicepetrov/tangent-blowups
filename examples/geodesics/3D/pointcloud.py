@@ -38,7 +38,6 @@ from tangent_blowups.solvers.linalg import normalize_vectors
 # -- Constants ---------------------------------------------------------------
 METHODS = ["lifted", "robust"]
 _DATA_ROOT = Path(__file__).resolve().parents[3] / "data"
-_POINTCLOUD_DIRS = ["thingi10k_pointcloud", "threedscans_pointcloud"]
 
 
 # -- Rotation ----------------------------------------------------------------
@@ -72,11 +71,9 @@ def _parse_rotation(spec: str) -> np.ndarray:
 def _available_pointclouds() -> dict[str, Path]:
     """Return {stem: path} for all available point clouds across datasets."""
     result: dict[str, Path] = {}
-    for dirname in _POINTCLOUD_DIRS:
-        d = _DATA_ROOT / dirname
-        if d.is_dir():
-            for p in d.glob("*.npz"):
-                result[p.stem] = p
+    if _DATA_ROOT.is_dir():
+        for p in _DATA_ROOT.rglob("*.npz"):
+            result.setdefault(p.stem, p)
     return dict(sorted(result.items()))
 
 
@@ -438,7 +435,7 @@ def main():
         help="Name or path of the point cloud (.npz). Omit to list available.",
     )
     parser.add_argument("--k", type=int, default=20)
-    parser.add_argument("--alpha", type=float, default=5.0) # TODO Need to note this in the paper
+    parser.add_argument("--alpha", type=float, default=5.0)
     parser.add_argument("--levels", type=str, default="1",
                         choices=["1", "2", "both"],
                         help="Blow-up levels to show: 1, 2, or both.")
