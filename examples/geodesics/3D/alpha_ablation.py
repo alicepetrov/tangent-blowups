@@ -26,7 +26,11 @@ import polyscope.imgui as psim
 from matplotlib import colormaps
 
 from tangent_blowups.io.load import load_pointcloud
-from tangent_blowups.pointcloud import lifted_heat_method, precompute_heat_method
+from tangent_blowups.pointcloud import (
+    estimate_normals_pca,
+    lifted_heat_method,
+    precompute_heat_method,
+)
 from tangent_blowups.pointcloud.geodesic_heat import _normals_to_tangent_frames
 from tangent_blowups.geometry.iterated_grassmann import BlowUpLevel
 from tangent_blowups.geometry.kernels import estimate_product_bandwidths
@@ -84,8 +88,10 @@ def _sample_surface(name: str, nu: int, nv: int):
     n_target = nu * nv
 
     def area_element(u_, v_, h=1e-4):
-        pu_p = surf.position(u_ + h, v_); pu_m = surf.position(u_ - h, v_)
-        pv_p = surf.position(u_, v_ + h); pv_m = surf.position(u_, v_ - h)
+        pu_p = surf.position(u_ + h, v_)
+        pu_m = surf.position(u_ - h, v_)
+        pv_p = surf.position(u_, v_ + h)
+        pv_m = surf.position(u_, v_ - h)
         du = (pu_p - pu_m) / (2.0 * h)
         dv = (pv_p - pv_m) / (2.0 * h)
         return np.linalg.norm(np.cross(du, dv), axis=-1)
@@ -190,6 +196,12 @@ def _load_points_and_normals(path, normal_eps=1e-8):
     return points[valid], normalize_vectors(normals[valid])
 
 
+def _estimate_normals_lpca(points, *, k):
+    print(f"Estimating normals with LPCA (k={k})...")
+    normals = estimate_normals_pca(points, k=k)
+    return normalize_vectors(np.asarray(normals, dtype=float))
+
+
 # -- Level construction ------------------------------------------------------
 def _build_level(points, normals, *, alpha, k):
     frames = _normals_to_tangent_frames(normals)
@@ -227,6 +239,10 @@ def main():
                         default=",".join(str(a) for a in DEFAULT_ALPHAS),
                         help="Comma-separated alpha values (default: 0,1,2,5).")
     parser.add_argument("--k", type=int, default=20)
+    parser.add_argument("--estimate-normals-lpca", action="store_true",
+                        help="Replace loaded/analytic normals with LPCA-estimated normals.")
+    parser.add_argument("--lpca-k", type=int, default=30,
+                        help="Neighbors used for LPCA normal estimation.")
     parser.add_argument("--t-scale", type=float, default=1.0,
                         help="Diffusion time multiplier (Crane et al. default = 1).")
     parser.add_argument("--fixed-bandwidth", type=float, nargs="?", const=0.5, default=None,
@@ -280,6 +296,9 @@ def main():
         R = _parse_rotation(args.rotate)
         points = points @ R.T
         normals = normals @ R.T
+
+    if args.estimate_normals_lpca:
+        normals = _estimate_normals_lpca(points, k=args.lpca_k)
 
     bbox = points.max(axis=0) - points.min(axis=0)
     x_spacing = float(bbox[0]) * 1.4

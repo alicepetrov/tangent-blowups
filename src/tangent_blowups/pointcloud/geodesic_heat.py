@@ -23,6 +23,7 @@ the initial impulse to account for non-uniform point density.
 """
 from __future__ import annotations
 
+from time import perf_counter
 from typing import Literal, Optional, Sequence
 
 import numpy as np
@@ -343,6 +344,7 @@ def lifted_heat_method(
     gradient_lam: float = 0.0,
     anchor_index: Optional[int] = None,
     return_intermediate: bool = False,
+    timings: dict[str, float] | None = None,
     device: str | None = None,
     _precomputed: dict | None = None,
     # Legacy parameters — accepted for backward compatibility
@@ -424,6 +426,9 @@ def lifted_heat_method(
         gradient_lam: Tikhonov regularisation for gradient/divergence.
         anchor_index: Dirichlet anchor for Poisson solve (default: first source).
         return_intermediate: If True, return ``(phi, u, X, div)``.
+        timings: Optional dict populated with elapsed times for the
+            precompute reuse/build, heat diffusion, gradient, Poisson, and
+            total solve stages.
         device: Compute device.  ``"cuda"`` uses GPU-accelerated sparse
             solvers and edge operations; ``"cpu"`` uses the original
             numpy/scipy path.  ``None`` (default) auto-detects CUDA.
@@ -440,6 +445,7 @@ def lifted_heat_method(
     # --- Resolve device ---
     use_device = _resolve_device(device)
     use_gpu = use_device == "cuda" and _gpu_available()
+    total_start = perf_counter()
 
     # --- Resolve backward-compatible parameter aliases ---
     use_normalized = laplacian_normalized
@@ -465,6 +471,7 @@ def lifted_heat_method(
 
     # --- Build or reuse precomputed data ---
     if _precomputed is not None:
+        precompute_elapsed = 0.0
         L = _precomputed["L"]
         W = _precomputed["W"]
         W_reg = _precomputed["W_reg"]
@@ -473,6 +480,7 @@ def lifted_heat_method(
         n_comp = _precomputed["n_comp"]
         comp_labels = _precomputed["comp_labels"]
     else:
+        precompute_start = perf_counter()
         if kernel == "product":
             sx, su = sigma_x, sigma_u
             if sx is None or su is None:
@@ -517,6 +525,7 @@ def lifted_heat_method(
             edge_cache = precompute_edges_gpu(level, W_reg, gradient_lam)
         else:
             edge_cache = None
+        precompute_elapsed = perf_counter() - precompute_start
 
     # --- Step 1: Heat diffusion  (M + tL)^n u = e_i ---
     # The Dirac delta as a FEM functional gives rhs = e_i (indicator at
@@ -525,6 +534,7 @@ def lifted_heat_method(
     u = np.zeros(n_points, dtype=float)
     u[src_idx] = 1.0
 
+    diffusion_start = perf_counter()
     if use_gpu:
         from ..solvers.gpu_sparse import sparse_solve_gpu
         from ..geometry._gpu_ops import (
@@ -536,12 +546,14 @@ def lifted_heat_method(
     else:
         for _ in range(max(diffusion_steps, 1)):
             u = spla.spsolve(A, u)
+    diffusion_elapsed = perf_counter() - diffusion_start
 
     # --- Step 2: Normalised gradient  X = -grad(u) / |grad(u)| ---
     # The divergence operator uses only the spatial (first n_orig) components
     # of X, so we must normalise the spatial part specifically — otherwise
     # the unit-length constraint in D dimensions leaves the spatial
     # projection with norm << 1, systematically deflating the divergence.
+    gradient_start = perf_counter()
     if use_gpu:
         grad_u = lifted_gradient_gpu(
             level, u, W_reg, lam=gradient_lam, _edge_cache=edge_cache,
@@ -554,9 +566,11 @@ def lifted_heat_method(
     grad_spatial_norms = np.clip(grad_spatial_norms, gradient_eps, None)
     X = np.zeros_like(grad_u)
     X[:, :n_orig] = -grad_spatial / grad_spatial_norms[:, None]
+    gradient_elapsed = perf_counter() - gradient_start
 
     # --- Step 3: Poisson solve  L phi = -div_edge(X) ---
     # Use edge-compatible divergence so the RHS lies in the range of L.
+    poisson_start = perf_counter()
     if use_gpu:
         div_X = edge_divergence_gpu(level, X, W_reg)
     else:
@@ -587,6 +601,14 @@ def lifted_heat_method(
         phi = sparse_solve_gpu(L_poisson, div_rhs)
     else:
         phi = spla.spsolve(L_poisson, div_rhs)
+    poisson_elapsed = perf_counter() - poisson_start
+
+    if timings is not None:
+        timings["precompute"] = precompute_elapsed
+        timings["diffusion"] = diffusion_elapsed
+        timings["gradient"] = gradient_elapsed
+        timings["poisson"] = poisson_elapsed
+        timings["total"] = perf_counter() - total_start
 
     if return_intermediate:
         return phi, u, X, div_X

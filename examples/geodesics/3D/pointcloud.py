@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 from math import gamma as math_gamma
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 import polyscope as ps
@@ -38,6 +39,12 @@ from tangent_blowups.solvers.linalg import normalize_vectors
 # -- Constants ---------------------------------------------------------------
 METHODS = ["lifted", "robust"]
 _DATA_ROOT = Path(__file__).resolve().parents[3] / "data"
+
+
+def _format_elapsed(seconds: float) -> str:
+    if seconds < 1.0:
+        return f"{seconds * 1e3:.1f} ms"
+    return f"{seconds:.3f} s"
 
 
 # -- Rotation ----------------------------------------------------------------
@@ -107,14 +114,6 @@ def _load_points_and_normals(
     if not np.all(valid):
         print(f"Dropping {int(np.sum(~valid))} invalid/degenerate samples.")
     return points[valid], normalize_vectors(normals[valid])
-
-
-def _build_level(points, normals, *, alpha, k, n_lifts=1):
-    frames = _normals_to_tangent_frames(normals)
-    level = BlowUpLevel.from_point_tangents(points, frames)
-    for _ in range(n_lifts):
-        level = level.lift(alpha=alpha, k=k)
-    return level
 
 
 # -- Generic heat method for arbitrary (L, M, W) ----------------------------
@@ -219,7 +218,7 @@ def _anchor_components(L, rhs, W, anchor_index):
 
 def generic_heat_method(
     points, L, M, W, source_index, *, t_scale=15.0, gradient_eps=1e-12,
-    diffusion_steps=1,
+    diffusion_steps=1, timings: dict[str, float] | None = None,
 ):
     """Three-step heat method with an arbitrary graph Laplacian."""
     N = len(points)
@@ -234,19 +233,32 @@ def generic_heat_method(
 
     # Step 1: Heat diffusion  (M + t L)^n u = delta
     A = M + float(t) * L
+    A_csr = A.tocsr()
     u = rhs.copy()
+    diffusion_start = perf_counter()
     for _ in range(max(diffusion_steps, 1)):
-        u = spla.spsolve(A.tocsr(), u)
+        u = spla.spsolve(A_csr, u)
+    diffusion_elapsed = perf_counter() - diffusion_start
 
     # Step 2: Normalised gradient
+    gradient_start = perf_counter()
     grad_u = _edge_gradient(points, u, W)
     norms = np.clip(np.linalg.norm(grad_u, axis=1), gradient_eps, None)
     X = -grad_u / norms[:, None]
+    gradient_elapsed = perf_counter() - gradient_start
 
     # Step 3: Poisson solve  L phi = -div(X)
+    poisson_start = perf_counter()
     div_X = _edge_divergence_pts(points, X, W)
     L_p, rhs_p = _anchor_components(L, -div_X, W, int(src[0]))
     phi = spla.spsolve(L_p, rhs_p)
+    poisson_elapsed = perf_counter() - poisson_start
+
+    if timings is not None:
+        timings["diffusion"] = diffusion_elapsed
+        timings["gradient"] = gradient_elapsed
+        timings["poisson"] = poisson_elapsed
+        timings["total"] = diffusion_elapsed + gradient_elapsed + poisson_elapsed
 
     return phi, u
 
@@ -353,17 +365,19 @@ def _compute_lifted(level, points, source_index, *, k, sigma_x, sigma_u,
                     device=None, _precomputed=None):
     print(f"    lifted: sigma_x={sigma_x}, sigma_u={sigma_u}, "
           f"uniform_reg={uniform_regression}, steps={diffusion_steps}")
+    timings: dict[str, float] = {}
     dist, u, _, _ = lifted_heat_method(
         level, source_index=source_index, k=k,
         kernel="product", sigma_x=sigma_x, sigma_u=sigma_u,
         t_scale=t_scale, return_intermediate=True,
         uniform_regression=uniform_regression,
         diffusion_steps=diffusion_steps,
+        timings=timings,
         device=device,
         _precomputed=_precomputed,
     )
     dist = np.maximum(dist - dist[source_index], 0.0)
-    return dist, u
+    return dist, u, timings
 
 
 def _compute_robust(points, source_index, *, k, t_scale, diffusion_steps=1):
@@ -377,12 +391,14 @@ def _compute_robust(points, source_index, *, k, t_scale, diffusion_steps=1):
     vals = np.ones(len(rows))
     W = sparse.csr_matrix((vals, (rows, cols)), shape=(len(points), len(points)))
     W = W + W.T
+    timings: dict[str, float] = {}
     dist, u = generic_heat_method(
         points, L, M, W, source_index,
         t_scale=t_scale, diffusion_steps=diffusion_steps,
+        timings=timings,
     )
     dist = np.maximum(dist - dist[source_index], 0.0)
-    return dist, u
+    return dist, u, timings
 
 
 # -- Display -----------------------------------------------------------------
@@ -395,14 +411,14 @@ def _compute_and_display(
     """Compute geodesics for one method and update its point cloud."""
     print(f"  [{method}] computing...")
     if method == "lifted":
-        dist, u = _compute_lifted(
+        dist, u, _ = _compute_lifted(
             level, points, source_index,
             k=k, sigma_x=sigma_x, sigma_u=sigma_u, t_scale=t_scale,
             uniform_regression=uniform_regression,
             diffusion_steps=diffusion_steps,
         )
     elif method == "robust":
-        dist, u = _compute_robust(
+        dist, u, _ = _compute_robust(
             points, source_index, k=k, t_scale=t_scale,
         )
     else:
@@ -435,11 +451,11 @@ def main():
         help="Name or path of the point cloud (.npz). Omit to list available.",
     )
     parser.add_argument("--k", type=int, default=20)
-    parser.add_argument("--alpha", type=float, default=5.0)
-    parser.add_argument("--levels", type=str, default="1",
+    parser.add_argument("--alpha", type=float, default=1.0)
+    parser.add_argument("--levels", type=str, default="both",
                         choices=["1", "2", "both"],
                         help="Blow-up levels to show: 1, 2, or both.")
-    parser.add_argument("--spread", type=str, default="geodesic",
+    parser.add_argument("--spread", type=str, default="heat",
                         choices=["geodesic", "heat", "both"],
                         help="Which rows to show: geodesic, heat, or both.")
     parser.add_argument("--sigma-x", type=float, default=None,
@@ -507,13 +523,32 @@ def main():
         print(f"Applied rotation: --rotate {args.rotate}")
 
     # -- Build levels --
-    level1 = level2 = None
-    if args.levels in ("1", "both"):
-        level1 = _build_level(points, normals, alpha=alpha, k=k, n_lifts=1)
-        print(f"Built level-1: N={level1.N}, D={level1.D}, d={level1.d}")
-    if args.levels in ("2", "both"):
-        level2 = _build_level(points, normals, alpha=alpha, k=k, n_lifts=2)
-        print(f"Built level-2: N={level2.N}, D={level2.D}, d={level2.d}")
+    show_level1 = args.levels in ("1", "both")
+    show_level2 = args.levels in ("2", "both")
+    frames = _normals_to_tangent_frames(normals)
+    level0 = BlowUpLevel.from_point_tangents(points, frames)
+
+    built_level1 = None
+    if show_level1 or show_level2:
+        start = perf_counter()
+        built_level1 = level0.lift(alpha=alpha, k=k)
+        elapsed = perf_counter() - start
+        label = "Built level-1" if show_level1 else "Built intermediate level-1"
+        print(
+            f"{label}: N={built_level1.N}, D={built_level1.D}, d={built_level1.d} "
+            f"in {_format_elapsed(elapsed)}",
+        )
+
+    level1 = built_level1 if show_level1 else None
+    level2 = None
+    if show_level2 and built_level1 is not None:
+        start = perf_counter()
+        level2 = built_level1.lift(alpha=alpha, k=k)
+        elapsed = perf_counter() - start
+        print(
+            f"Built level-2: N={level2.N}, D={level2.D}, d={level2.d} "
+            f"in {_format_elapsed(elapsed)}",
+        )
 
     # -- Per-column parameters --
     # Each column (lift1, lift2, robust) gets its own t_scale, alpha,
@@ -625,6 +660,7 @@ def main():
                   f"(t_scale={cp['t_scale']}, "
                   f"sigma_x={cp['sigma_x']:.4f}, "
                   f"sigma_u={[round(s,4) for s in cp['sigma_u']]})...")
+            start = perf_counter()
             _cache.clear()
             _cache[cache_key] = precompute_heat_method(
                 level, k=k,
@@ -634,23 +670,23 @@ def main():
                 uniform_regression=state["uniform_regression"],
                 device=args.device,
             )
-            print(f"    [{col_name}] cache ready")
+            elapsed = perf_counter() - start
+            print(f"    [{col_name}] cache ready in {_format_elapsed(elapsed)}")
         return _cache[cache_key]
 
-    def _compute_panel(panel_name, source_index):
-        row_name, col_name = panel_name.split("/")
-        level = levels[col_name]
-
+    def _compute_column_result(col_name, source_index):
         cp = state["col"][col_name]
-        print(f"    [{col_name}] steps={cp['steps']}")
+        print(f"  [{col_name}] steps={cp['steps']}")
+        start = perf_counter()
         if col_name == "robust":
-            dist, u = _compute_robust(
+            dist, u, timings = _compute_robust(
                 points, source_index, k=k, t_scale=cp["t_scale"],
                 diffusion_steps=cp["steps"],
             )
         else:
+            level = levels[col_name]
             pre = _get_or_build_cache(col_name, level)
-            dist, u = _compute_lifted(
+            dist, u, timings = _compute_lifted(
                 level, points, source_index,
                 k=k, sigma_x=cp["sigma_x"],
                 sigma_u=cp["sigma_u"],
@@ -660,6 +696,14 @@ def main():
                 device=args.device,
                 _precomputed=pre,
             )
+        elapsed = perf_counter() - start
+        if "diffusion" in timings:
+            print(f"  [{col_name}] diffusion took {_format_elapsed(timings['diffusion'])}")
+        print(f"  [{col_name}] total solve took {_format_elapsed(elapsed)}")
+        return dist, u
+
+    def _apply_panel_result(panel_name, source_index, dist, u):
+        row_name, _ = panel_name.split("/")
 
         state[f"{panel_name}_dist"] = dist
         state[f"{panel_name}_u"] = u
@@ -777,11 +821,19 @@ def main():
         if state["computing"]:
             state["computing"] = False
             idx = state["source_index"]
+            compute_start = perf_counter()
             print(f"Computing geodesics from point {idx}...")
+            column_results = {}
+            for col_name, _ in columns:
+                column_results[col_name] = _compute_column_result(col_name, idx)
             for p in all_panels:
-                print(f"  [{p}] computing...")
-                _compute_panel(p, idx)
-                print(f"  [{p}] done")
+                _, col_name = p.split("/")
+                dist, u = column_results[col_name]
+                _apply_panel_result(p, idx, dist, u)
+            print(
+                f"Updated {len(all_panels)} panels in "
+                f"{_format_elapsed(perf_counter() - compute_start)}",
+            )
 
         if psim.Button("Screenshot"):
             fname = f"geodesic_{args.pointcloud}.png"
@@ -794,9 +846,14 @@ def main():
                 if sm is None:
                     continue
                 _export_ply(args.pointcloud, points, normals, p, sm)
+                tag = p.replace("/", "_")
+                np.save(f"{args.pointcloud}_points.npy", points)
+                u_p = state.get(f"{p}_u")
+                if u_p is not None:
+                    np.save(f"{args.pointcloud}_{tag}_diffusion.npy", u_p)
+                    print(f"Saved {args.pointcloud}_{tag}_diffusion.npy")
                 row_name = p.split("/")[0]
                 if row_name == "heat":
-                    u_p = state.get(f"{p}_u")
                     if u_p is not None:
                         u_abs = np.abs(u_p)
                         _export_colourbar(

@@ -160,7 +160,7 @@ def main():
     parser.add_argument("--surface", "-s", type=str, default="etruscan_venus",
                         choices=sorted(NON_ORIENTABLE_SURFACES.keys()),
                         help="Non-orientable surface (default etruscan_venus).")
-    parser.add_argument("--n-points", "-n", type=int, default=100000,
+    parser.add_argument("--n-points", "-n", type=int, default=80000,
                         help="Target number of samples (default 8000).")
     parser.add_argument("--alpha", type=float, default=1.0,
                         help="Chordal-Sasaki lift parameter (default 1.0).")
