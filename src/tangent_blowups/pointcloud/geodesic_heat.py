@@ -38,9 +38,6 @@ from ..geometry.kernels import (
     product_affinity,
     affinity_to_laplacian,
     lifted_gradient,
-    lifted_divergence,
-    _precompute_edges,
-    _knn_edges,
 )
 
 

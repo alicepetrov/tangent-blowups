@@ -205,3 +205,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Project-specific
+# Polyscope / ImGui viewer window state (written next to any script that opens a viewer)
+.polyscope.ini
+imgui.ini
+# External datasets used by examples (Thingi10K, SCEC faults, 3D scans, sampled surfaces)
+data/
